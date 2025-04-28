@@ -40,17 +40,18 @@ class GIN(nn.Module):
       W_e = nn.Dense(
           node_features.shape[-1], name='W_e', kernel_init=self.kernel_init
       )
-      send_edges = mish(send_edges + W_e(edge_features))
-
-    ####################################
-    # Node update
-    ####################################
+      send_edges += W_e(edge_features)
+      
     if global_features is not None:
       W_g = nn.Dense(
           node_features.shape[-1], name='W_g', kernel_init=self.kernel_init
       )
-      node_features = mish(node_features + W_g(global_features))
+      send_edges += W_g(global_features)
+      
 
+    ####################################
+    # Node update
+    ####################################
     if self.epsilon is None:
       epsilon = self.param('epsilon', nn.initializers.zeros, (1, 1))
     else:
@@ -59,7 +60,7 @@ class GIN(nn.Module):
 
     new_nodes = self.mlp(
         (1 + epsilon) * node_features +
-        segment_sum(send_edges, receivers, num_nodes)
+        nn.relu(segment_sum(send_edges, receivers, num_nodes))
     )
 
     return dict(

@@ -18,8 +18,8 @@ class GraphSearchEnv(gym.Env):
     # Search grid config
     self.nx_grid = 8
     self.ny_grid = 8
-    self.n_grid = self.nx_grid * self.ny_grid
     self.knn = 4
+    self.n_grid = self.nx_grid * self.ny_grid
 
     self.max_nodes = self.n_grid
     self.max_edges = self.knn * self.n_grid
@@ -307,8 +307,6 @@ class GraphSearchEnv(gym.Env):
     )
     # Plot gaussian mixture (likelihood) as an image
     mixture = np.zeros((nx, ny))
-    xmin, xmax = self.scenario['extents'][0]
-    ymin, ymax = self.scenario['extents'][1]
     for i in range(len(search_nodes)):
       mixture += search_nodes[i]['weight'] * \
           scipy.stats.multivariate_normal.pdf(

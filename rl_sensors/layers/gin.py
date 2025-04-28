@@ -1,0 +1,71 @@
+import time
+from typing import *
+import flax.linen as nn
+import jax
+import jax.numpy as jnp
+from einops import rearrange
+from rl_sensors.layers.activation import mish
+
+
+class GIN(nn.Module):
+  mlp: nn.Module
+  epsilon: Optional[float] = None
+  kernel_init: Callable = nn.initializers.xavier_normal()
+
+  @nn.compact
+  def __call__(self,
+               node_features: jax.Array,
+               edge_features: jax.Array,
+               global_features: jax.Array,
+               senders: jax.Array,
+               receivers: jax.Array
+               ) -> jax.Array:
+    ############################
+    # Pre-processing
+    ############################
+    num_nodes = node_features.shape[-2]
+    leading_dims = node_features.shape[:-2]
+
+    segment_sum = jax.ops.segment_sum
+    for _ in range(len(leading_dims)):
+      segment_sum = jax.vmap(segment_sum, in_axes=(0, 0, None))
+
+    ####################################
+    # Edge update
+    ####################################
+    send_edges = jnp.take_along_axis(
+        node_features, senders[..., None], axis=-2
+    )
+    if edge_features is not None:
+      W_e = nn.Dense(
+          node_features.shape[-1], name='W_e', kernel_init=self.kernel_init
+      )
+      send_edges = mish(send_edges + W_e(edge_features))
+
+    ####################################
+    # Node update
+    ####################################
+    if global_features is not None:
+      W_g = nn.Dense(
+          node_features.shape[-1], name='W_g', kernel_init=self.kernel_init
+      )
+      node_features = mish(node_features + W_g(global_features))
+
+    if self.epsilon is None:
+      epsilon = self.param('epsilon', nn.initializers.zeros, (1, 1))
+    else:
+      epsilon = self.epsilon
+    epsilon = jnp.tile(epsilon, (*node_features.shape[:-2], 1, 1))
+
+    new_nodes = self.mlp(
+        (1 + epsilon) * node_features +
+        segment_sum(send_edges, receivers, num_nodes)
+    )
+
+    return dict(
+        node_features=new_nodes,
+        edge_features=edge_features,
+        global_features=global_features,
+        senders=senders,
+        receivers=receivers,
+    )

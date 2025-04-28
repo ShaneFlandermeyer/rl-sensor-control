@@ -10,7 +10,7 @@ import numpy as np
 from einops import rearrange
 from rl_sensors.layers.attention import PMA, AttentionBlock
 from rl_sensors.layers.gat import GATv2
-from rl_sensors.layers.activation import mish
+from rl_sensors.layers.gin import GIN
 from rl_sensors.envs.graph_search import GraphSearchEnv
 
 
@@ -55,8 +55,7 @@ class GraphEncoder(nn.Module):
     # Pre-process node features with an MLP
     graph['node_features'] = nn.Sequential([
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-        nn.RMSNorm(),
-        mish,
+        nn.relu,
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
         nn.RMSNorm(),
     ])(graph['node_features'])
@@ -66,36 +65,34 @@ class GraphEncoder(nn.Module):
       skip = nn.Dense(
           self.embed_dim, kernel_init=self.kernel_init
       )(graph['node_features'])
-      graph = GATv2(
-          embed_dim=self.embed_dim,
-          num_heads=self.num_heads,
-          share_weights=False,
-          add_self_edges=False,
+      graph = GIN(
+          mlp=nn.Sequential([
+              nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
+              nn.relu,
+              nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
+          ]),
+          epsilon=0.0,
           kernel_init=self.kernel_init,
       )(**graph)
-      graph['node_features'] = mish(
+      graph['node_features'] = nn.relu(
           nn.RMSNorm()(graph['node_features'] + skip)
       )
 
-      # Global pooling
-      graph['global_features'] = mish(
-          PMA(
-              num_seeds=1,
-              seed_init=self.kernel_init,
-              attention_base=AttentionBlock(
-                  embed_dim=self.embed_dim,
-                  hidden_dim=self.embed_dim,
-                  num_heads=self.num_heads,
-                  norm_qk=False,
-                  use_ffn=False,
-                  kernel_init=self.kernel_init,
-              ),
-          )(x=graph['node_features'])
-      )
-      if input['global_features'] is not None:
-        graph['global_features'] = jnp.concatenate(
-            [graph['global_features'], input['global_features']], axis=-1
-        )
+    # Global pooling
+    graph['global_features'] = nn.relu(
+        PMA(
+            num_seeds=1,
+            seed_init=self.kernel_init,
+            attention_base=AttentionBlock(
+                embed_dim=self.embed_dim,
+                hidden_dim=self.embed_dim,
+                num_heads=self.num_heads,
+                norm_qk=False,
+                use_ffn=False,
+                kernel_init=self.kernel_init,
+            ),
+        )(x=graph['node_features'])
+    )
 
     # Post-processing
     x = rearrange(graph['global_features'], '... n d -> ... (n d)')

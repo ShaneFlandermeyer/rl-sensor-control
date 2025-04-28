@@ -11,7 +11,6 @@ setup(
     packages=find_packages(),
     install_requires=[
       'mot-py @ git+https://github.com/ShaneFlandermeyer/MOTpy.git@develop',
-      'flax-gnn @ git+https://github.com/ShaneFlandermeyer/flax-gnn.git@develop',
       'tdmpc2-jax @ git+https://github.com/ShaneFlandermeyer/tdmpc2-jax.git@develop',
       'bmpc-jax @ git+https://github.com/ShaneFlandermeyer/bmpc-jax.git@develop'
     ],

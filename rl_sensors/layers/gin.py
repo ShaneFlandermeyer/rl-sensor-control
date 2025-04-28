@@ -47,7 +47,8 @@ class GIN(nn.Module):
           node_features.shape[-1], name='W_g', kernel_init=self.kernel_init
       )
       send_edges += W_g(global_features)
-      
+  
+    send_edges = nn.relu(send_edges)      
 
     ####################################
     # Node update
@@ -60,7 +61,7 @@ class GIN(nn.Module):
 
     new_nodes = self.mlp(
         (1 + epsilon) * node_features +
-        nn.relu(segment_sum(send_edges, receivers, num_nodes))
+        segment_sum(send_edges, receivers, num_nodes)
     )
 
     return dict(

@@ -5,6 +5,7 @@
 To run experiments, you must install this repository and its dependencies as follows
 ```[bash]
 pip install -e .
+pip install jax[cuda12]
 ```
 
 This installs the following packages:

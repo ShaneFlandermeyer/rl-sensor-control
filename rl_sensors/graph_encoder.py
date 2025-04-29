@@ -55,9 +55,11 @@ class GraphEncoder(nn.Module):
     # Pre-process node features with an MLP
     graph['node_features'] = nn.Sequential([
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
+        nn.RMSNorm(),
         nn.relu,
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
         nn.RMSNorm(),
+        nn.relu,
     ])(graph['node_features'])
 
     for i in range(self.num_layers):
@@ -68,6 +70,7 @@ class GraphEncoder(nn.Module):
       graph = GIN(
           mlp=nn.Sequential([
               nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
+              nn.RMSNorm(),
               nn.relu,
               nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
           ]),
@@ -79,20 +82,18 @@ class GraphEncoder(nn.Module):
       )
 
     # Global pooling
-    graph['global_features'] = nn.relu(
-        PMA(
-            num_seeds=1,
-            seed_init=self.kernel_init,
-            attention_base=AttentionBlock(
-                embed_dim=self.embed_dim,
-                hidden_dim=self.embed_dim,
-                num_heads=self.num_heads,
-                norm_qk=False,
-                use_ffn=False,
-                kernel_init=self.kernel_init,
-            ),
-        )(x=graph['node_features'])
-    )
+    graph['global_features'] = PMA(
+        num_seeds=1,
+        seed_init=nn.initializers.xavier_normal(),
+        attention_base=AttentionBlock(
+            embed_dim=self.embed_dim,
+            hidden_dim=self.embed_dim,
+            num_heads=self.num_heads,
+            norm_qk=False,
+            use_ffn=False,
+            kernel_init=self.kernel_init,
+        ),
+    )(x=graph['node_features'])
 
     # Post-processing
     x = rearrange(graph['global_features'], '... n d -> ... (n d)')

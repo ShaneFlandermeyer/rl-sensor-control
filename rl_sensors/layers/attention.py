@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 from rl_sensors.layers.activation import mish
 
+
 class AttentionBlock(nn.Module):
   embed_dim: int
   hidden_dim: int
@@ -51,6 +52,8 @@ class AttentionBlock(nn.Module):
       ], name='ffn')
 
       x = x + ffn(x)
+    else:
+      x = mish(x)
 
     return x
 

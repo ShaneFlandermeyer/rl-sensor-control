@@ -56,12 +56,11 @@ class GATv2(nn.Module):
     else:
       W = nn.Dense(2*self.embed_dim, name='W', kernel_init=self.kernel_init)
       send_nodes, recv_nodes = jnp.split(W(node_features), 2, axis=-1)
-    
     if global_features is not None:
       W_g = nn.Dense(self.embed_dim, name='W_g', kernel_init=self.kernel_init)
-      global_features = W_g(global_features)
-      send_nodes = send_nodes + global_features
-      recv_nodes = recv_nodes + global_features
+      global_embed = W_g(global_features)
+      send_nodes += global_embed
+      recv_nodes += global_embed
       
     send_edges = jnp.take_along_axis(send_nodes, senders[..., None], axis=-2)
     recv_edges = jnp.take_along_axis(recv_nodes, receivers[..., None], axis=-2)

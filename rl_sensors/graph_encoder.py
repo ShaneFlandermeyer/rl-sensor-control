@@ -12,6 +12,7 @@ from rl_sensors.layers.attention import PMA, AttentionBlock
 from rl_sensors.layers.gat import GATv2
 from rl_sensors.layers.gin import GIN
 from rl_sensors.envs.graph_search import GraphSearchEnv
+from rl_sensors.layers.simba import Simba
 
 
 class GraphEncoder(nn.Module):
@@ -25,42 +26,39 @@ class GraphEncoder(nn.Module):
     ######################
     # Pre-processing
     ######################
-    edge_features = None  # input['edge_features']
-    # edge_mask = input['edge_mask']
+    edge_features = None
     edge_list = input['edge_list']
     global_features = input['global_features']
     node_features = input['node_features']
-    # node_mask = input['node_mask']
 
-    # Handle masked edges
-    # batch_dims = node_features.shape[:-2]
-    # pad_node = jnp.zeros((*batch_dims, 1, node_features.shape[-1]))
-    # pad_mask = jnp.zeros((*batch_dims, 1), dtype=bool)
-    # node_features = jnp.concatenate([node_features, pad_node], axis=-2)
-    # node_mask = jnp.concatenate([node_mask, pad_mask], axis=-1)
-    # senders = jnp.where(edge_mask, edge_list[..., 0], -1)
-    # receivers = jnp.where(edge_mask, edge_list[..., 1], -1)
     senders, receivers = edge_list[..., 0], edge_list[..., 1]
 
     ######################
     # Graph Processing
     ######################
+    # Add global features to ALL node embeddings
+    if global_features is not None:
+      node_features = jnp.concatenate([
+          node_features,
+          global_features.repeat(node_features.shape[-2], axis=-2),
+      ], axis=-1
+      )
+
+    # Pre-process node features with an MLP
+    node_features = Simba(
+        embed_dim=self.embed_dim,
+        num_blocks=1,
+        kernel_init=self.kernel_init,
+        activation=nn.relu,
+    )(node_features)
+
     graph = dict(
         node_features=node_features,
         edge_features=edge_features,
         senders=senders,
         receivers=receivers,
-        global_features=global_features,
+        global_features=None,
     )
-    # Pre-process node features with an MLP
-    graph['node_features'] = nn.Sequential([
-        nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-        nn.RMSNorm(),
-        nn.relu,
-        nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-        nn.RMSNorm(),
-        nn.relu,
-    ])(graph['node_features'])
 
     for i in range(self.num_layers):
       # Graph update
@@ -70,30 +68,23 @@ class GraphEncoder(nn.Module):
       graph = GIN(
           mlp=nn.Sequential([
               nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-              nn.RMSNorm(),
+              nn.LayerNorm(),
               nn.relu,
               nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-          ]),
-          epsilon=0.0,
-          kernel_init=self.kernel_init,
+          ])
       )(**graph)
       graph['node_features'] = nn.relu(
-          nn.RMSNorm()(graph['node_features'] + skip)
+          nn.LayerNorm()(graph['node_features'] + skip)
       )
 
-    # Global pooling
-    graph['global_features'] = PMA(
-        num_seeds=1,
-        seed_init=nn.initializers.xavier_normal(),
-        attention_base=AttentionBlock(
-            embed_dim=self.embed_dim,
-            hidden_dim=self.embed_dim,
-            num_heads=self.num_heads,
-            norm_qk=False,
-            use_ffn=False,
-            kernel_init=self.kernel_init,
-        ),
-    )(x=graph['node_features'])
+      # Global pooling
+      scores = nn.Dense(1, kernel_init=self.kernel_init)(
+          graph['node_features']
+      )
+      scores = jax.nn.softmax(scores, axis=-2)
+      graph['global_features'] = jnp.sum(
+          graph['node_features'] * scores, axis=-2, keepdims=True
+      )
 
     # Post-processing
     x = rearrange(graph['global_features'], '... n d -> ... (n d)')

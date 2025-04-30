@@ -21,7 +21,7 @@ env:
 
 encoder:
   embed_dim: 128
-  num_layers: 3
+  num_layers: 2
   num_heads: 4
   learning_rate: 3e-4
   tabulate: True
@@ -54,7 +54,7 @@ tdmpc2:
   temperature: 1.0
   # Optimization
   batch_size: 256
-  discount: 0.99
+  discount: 0.9
   rho: 0.5
   consistency_coef: 20
   reward_coef: 0.1

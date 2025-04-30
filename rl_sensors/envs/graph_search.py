@@ -37,7 +37,7 @@ class GraphSearchEnv(gym.Env):
         node_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_nodes, 2),
+            shape=(self.max_nodes, 4),
             dtype=np.float64,
         ),
     )
@@ -50,6 +50,8 @@ class GraphSearchEnv(gym.Env):
     self.timestep = 0
     if seed is not None:
       self.np_random, seed = gym.utils.seeding.np_random(seed)
+      self.action_space.seed(seed)
+      self.observation_space.seed(seed)
 
     self.scenario = dict(
         extents=np.array([
@@ -114,6 +116,9 @@ class GraphSearchEnv(gym.Env):
     self.search_grid['weights'] = search_ps * self.search_grid['weights'] + \
         (self.search_grid['birth_rate'] / self.n_grid)
 
+    # For reward calculation
+    self.w_pred_sum = self.search_grid['weights'].sum()
+
     # Update step
     search_pd = self.pd(
         object_state=self.search_grid,
@@ -174,10 +179,16 @@ class GraphSearchEnv(gym.Env):
 
   def get_obs(self) -> Dict[str, Any]:
     ###########################
+    # Scale factors
+    ###########################
+    position_scale = 0.5*np.diff(self.scenario['extents'], axis=-1).ravel()
+
+    ###########################
     # Nodes
     ###########################
     nodes = self.graph.vs
     node_keys = [
+        'position',
         'angle',
         'weight',
     ]
@@ -186,6 +197,7 @@ class GraphSearchEnv(gym.Env):
     }
     # Pre-process node features
     node_dict.update(
+        position=node_dict['position'] / position_scale[None, :],
         angle=node_dict['angle'] / np.pi,
         weight=node_dict['weight'] / np.max(node_dict['weight']),
     )
@@ -219,7 +231,8 @@ class GraphSearchEnv(gym.Env):
 
   def get_reward(self) -> float:
     w = self.search_grid['weights']
-    return -w.sum()
+    reward = (self.w_pred_sum - w.sum()) / w.max()
+    return reward
 
   def update_sensor_state(self, action: np.ndarray) -> None:
     self.sensor['steering_angle'] = action[0] * np.pi
@@ -231,7 +244,7 @@ class GraphSearchEnv(gym.Env):
       pos_inds: List[int],
   ) -> np.ndarray:
     n = 2
-    alpha, beta, kappa = 0.25, 2, 0
+    alpha, beta, kappa = 0.5, 2, 0
     points = merwe_scaled_sigma_points(
         x=object_state['positions'],
         P=object_state['covars'],

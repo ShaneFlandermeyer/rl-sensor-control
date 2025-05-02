@@ -26,7 +26,7 @@ class GraphEncoder(nn.Module):
     ######################
     # Pre-processing
     ######################
-    edge_features = None
+    edge_features = input['edge_features']
     edge_list = input['edge_list']
     global_features = input['global_features']
     node_features = input['node_features']
@@ -44,14 +44,6 @@ class GraphEncoder(nn.Module):
       ], axis=-1
       )
 
-    # Pre-process node features with an MLP
-    node_features = Simba(
-        embed_dim=self.embed_dim,
-        num_blocks=1,
-        kernel_init=self.kernel_init,
-        activation=nn.relu,
-    )(node_features)
-
     graph = dict(
         node_features=node_features,
         edge_features=edge_features,
@@ -62,13 +54,13 @@ class GraphEncoder(nn.Module):
 
     for i in range(self.num_layers):
       # Graph update
-      skip = nn.Dense(
+      graph['node_features'] = skip = nn.Dense(
           self.embed_dim, kernel_init=self.kernel_init
       )(graph['node_features'])
       graph = GIN(
           mlp=nn.Sequential([
-              nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
               nn.LayerNorm(),
+              nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
               nn.relu,
               nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
           ])

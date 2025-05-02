@@ -24,6 +24,12 @@ class GraphSearchEnv(gym.Env):
     self.max_nodes = self.n_grid
     self.max_edges = self.knn * self.n_grid
     self.observation_space = gym.spaces.Dict(
+        edge_features=gym.spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self.max_edges, 2),
+            dtype=np.float64,
+        ),
         edge_list=gym.spaces.MultiDiscrete(
             np.full((self.max_edges, 2), self.max_nodes+1),
             start=np.full((self.max_edges, 2), -1)
@@ -37,7 +43,7 @@ class GraphSearchEnv(gym.Env):
         node_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_nodes, 4),
+            shape=(self.max_nodes, 3),
             dtype=np.float64,
         ),
     )
@@ -80,6 +86,10 @@ class GraphSearchEnv(gym.Env):
         self.n_grid, axis=0
     )
     weights = np.full(self.n_grid, init_wsum/self.n_grid)
+    # Add randomness so the scenarios is not always the same
+    weights = (
+        weights + self.np_random.uniform(-0.1, 0.1, size=weights.shape)
+    ).clip(0, None)
 
     self.search_grid = dict(
         positions=grid_means,
@@ -111,7 +121,6 @@ class GraphSearchEnv(gym.Env):
         object_state=self.search_grid,
         scenario=self.scenario,
         sensor=self.sensor,
-        pos_inds=[0, 1],
     )
     self.search_grid['weights'] = search_ps * self.search_grid['weights'] + \
         (self.search_grid['birth_rate'] / self.n_grid)
@@ -123,7 +132,6 @@ class GraphSearchEnv(gym.Env):
     search_pd = self.pd(
         object_state=self.search_grid,
         sensor=self.sensor,
-        pos_inds=[0, 1],
     )
     self.search_grid['weights'] = (1 - search_pd) * self.search_grid['weights']
 
@@ -148,10 +156,6 @@ class GraphSearchEnv(gym.Env):
                   for i in range(self.search_grid['num_components'])
               ],
               position=self.search_grid['positions'],
-              angle=np.arctan2(
-                  self.search_grid['positions'][:, 1],
-                  self.search_grid['positions'][:, 0],
-              ),
               covar=self.search_grid['covars'],
               weight=self.search_grid['weights'],
           )
@@ -165,15 +169,26 @@ class GraphSearchEnv(gym.Env):
       )
       diag_inds = np.diag_indices(self.search_grid['num_components'])
       distances[diag_inds] = np.inf
-      knn_inds = np.argpartition(distances, self.knn, axis=1)
+      knn_inds = np.argpartition(distances, self.knn, axis=1)[:, :self.knn]
       self.graph.add_edges(
           es=[
               (self.graph.vs['name'][knn_inds[i, j]],
                self.graph.vs['name'][i])
               for i in range(self.search_grid['num_components'])
               for j in range(self.knn)
-          ]
+          ],
       )
+      # Edge features
+      src_pos = np.array([
+          self.graph.vs['position'][edge.source] for edge in self.graph.es
+      ])
+      dst_pos = np.array([
+          self.graph.vs['position'][edge.target] for edge in self.graph.es
+      ])
+      rel_pos = src_pos - dst_pos
+      self.graph.es['distance'] = np.linalg.norm(rel_pos, axis=-1)
+      self.graph.es['angle'] = np.arctan2(rel_pos[:, 1], rel_pos[:, 0])
+
     else:
       self.graph.vs['weight'] = self.search_grid['weights']
 
@@ -182,6 +197,7 @@ class GraphSearchEnv(gym.Env):
     # Scale factors
     ###########################
     position_scale = 0.5*np.diff(self.scenario['extents'], axis=-1).ravel()
+    distance_scale = np.linalg.norm(position_scale)
 
     ###########################
     # Nodes
@@ -189,24 +205,22 @@ class GraphSearchEnv(gym.Env):
     nodes = self.graph.vs
     node_keys = [
         'position',
-        'angle',
         'weight',
     ]
     node_dict = {
         k: np.array(nodes[k]).reshape((len(nodes), -1)) for k in node_keys
     }
-    # Pre-process node features
+    # Pre-process features
     node_dict.update(
         position=node_dict['position'] / position_scale[None, :],
-        angle=node_dict['angle'] / np.pi,
         weight=node_dict['weight'] / np.max(node_dict['weight']),
     )
 
     node_features = np.concatenate(
         [
             node_dict[key].astype(
-                self.observation_space['node_features'].dtype)
-            for key in node_keys
+                self.observation_space['node_features'].dtype
+            ) for key in node_keys
         ],
         axis=-1
     )
@@ -214,15 +228,39 @@ class GraphSearchEnv(gym.Env):
     ###########################
     # Edges
     ###########################
+    edges = self.graph.es
+    edge_keys = [
+        'angle',
+        'distance',
+    ]
+    edge_dict = {
+        k: np.array(edges[k]).reshape((len(edges), -1)) for k in edge_keys
+    }
+    # Pre-process features
+    edge_dict.update(
+        angle=edge_dict['angle'] / np.pi,
+        distance=edge_dict['distance'] / distance_scale
+    )
+    edge_features = np.concatenate(
+        [
+            edge_dict[key].astype(
+                self.observation_space['edge_features'].dtype
+            ) for key in edge_keys
+        ],
+        axis=-1
+    )
     edge_list = np.array(self.graph.get_edgelist())
 
     ###########################
     # Global features
     ###########################
     wsum = np.sum(self.search_grid['weights'], keepdims=True)
-    global_features = np.array([wsum])
+    global_features = np.array([
+        wsum,
+    ])
 
     obs = dict(
+        edge_features=edge_features,
         edge_list=edge_list,
         global_features=global_features,
         node_features=node_features,
@@ -232,6 +270,7 @@ class GraphSearchEnv(gym.Env):
   def get_reward(self) -> float:
     w = self.search_grid['weights']
     reward = (self.w_pred_sum - w.sum()) / w.max()
+    # reward = -w.sum()
     return reward
 
   def update_sensor_state(self, action: np.ndarray) -> None:
@@ -241,7 +280,6 @@ class GraphSearchEnv(gym.Env):
   def pd(
       object_state: Union[np.ndarray, Gaussian],
       sensor: Dict[str, Any],
-      pos_inds: List[int],
   ) -> np.ndarray:
     n = 2
     alpha, beta, kappa = 0.5, 2, 0
@@ -275,7 +313,6 @@ class GraphSearchEnv(gym.Env):
       object_state: Union[np.ndarray, Gaussian],
       scenario: Dict[str, Any],
       sensor: Dict[str, Any],
-      pos_inds: List[int],
   ) -> np.ndarray:
     return 0.999
 

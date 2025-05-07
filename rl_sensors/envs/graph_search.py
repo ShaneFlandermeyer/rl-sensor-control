@@ -27,7 +27,7 @@ class GraphSearchEnv(gym.Env):
         edge_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_edges, 2),
+            shape=(self.max_edges, 1),
             dtype=np.float64,
         ),
         edge_list=gym.spaces.MultiDiscrete(
@@ -72,9 +72,6 @@ class GraphSearchEnv(gym.Env):
     )
 
     # Create the search grid
-    init_wsum = 5
-    birth_rate = 1/25
-
     xmin, xmax = self.scenario['extents'][0]
     ymin, ymax = self.scenario['extents'][1]
     x = np.linspace(xmin, xmax, self.nx_grid)
@@ -85,11 +82,12 @@ class GraphSearchEnv(gym.Env):
     grid_covars = np.diag(np.array([dx, dy])**2)[None, ...].repeat(
         self.n_grid, axis=0
     )
-    weights = np.full(self.n_grid, init_wsum/self.n_grid)
-    # Add randomness so the scenarios is not always the same
-    weights = (
-        weights + self.np_random.uniform(-0.1, 0.1, size=weights.shape)
-    ).clip(0, None)
+    
+    # Randomly initialize search grid
+    birth_rate = 1/25
+    init_wsum = self.np_random.uniform(1, 5)
+    weights = self.np_random.uniform(0, 1, size=self.n_grid)
+    weights = (weights / weights.sum()) * init_wsum
 
     self.search_grid = dict(
         positions=grid_means,
@@ -156,7 +154,6 @@ class GraphSearchEnv(gym.Env):
                   for i in range(self.search_grid['num_components'])
               ],
               position=self.search_grid['positions'],
-              covar=self.search_grid['covars'],
               weight=self.search_grid['weights'],
           )
       )
@@ -187,8 +184,6 @@ class GraphSearchEnv(gym.Env):
       ])
       rel_pos = src_pos - dst_pos
       self.graph.es['distance'] = np.linalg.norm(rel_pos, axis=-1)
-      self.graph.es['angle'] = np.arctan2(rel_pos[:, 1], rel_pos[:, 0])
-
     else:
       self.graph.vs['weight'] = self.search_grid['weights']
 
@@ -230,7 +225,6 @@ class GraphSearchEnv(gym.Env):
     ###########################
     edges = self.graph.es
     edge_keys = [
-        'angle',
         'distance',
     ]
     edge_dict = {
@@ -238,7 +232,6 @@ class GraphSearchEnv(gym.Env):
     }
     # Pre-process features
     edge_dict.update(
-        angle=edge_dict['angle'] / np.pi,
         distance=edge_dict['distance'] / distance_scale
     )
     edge_features = np.concatenate(
@@ -269,8 +262,8 @@ class GraphSearchEnv(gym.Env):
 
   def get_reward(self) -> float:
     w = self.search_grid['weights']
-    reward = (self.w_pred_sum - w.sum()) / w.max()
-    # reward = -w.sum()
+    # reward = (self.w_pred_sum - w.sum()) / w.max()
+    reward = -w.sum()
     return reward
 
   def update_sensor_state(self, action: np.ndarray) -> None:

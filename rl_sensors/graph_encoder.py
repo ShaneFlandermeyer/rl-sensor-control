@@ -70,14 +70,17 @@ class GraphEncoder(nn.Module):
       )
 
       # Global pooling
-      scores = nn.Dense(1, kernel_init=self.kernel_init)(
-          graph['node_features']
-      )
-      scores = jax.nn.softmax(scores, axis=-2)
-      graph['global_features'] = jnp.sum(
-          graph['node_features'] * scores, axis=-2, keepdims=True
-      )
-
+      graph['global_features'] = PMA(
+          num_seeds=1,
+          seed_init=nn.initializers.zeros,
+          attention_base=AttentionBlock(
+              embed_dim=self.embed_dim,
+              hidden_dim=None,
+              num_heads=self.num_heads,
+              use_ffn=False,
+              kernel_init=self.kernel_init,
+          )
+      )(x=graph['node_features'])
     # Post-processing
     x = rearrange(graph['global_features'], '... n d -> ... (n d)')
 

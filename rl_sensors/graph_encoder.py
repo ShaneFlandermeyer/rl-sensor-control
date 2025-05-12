@@ -30,9 +30,9 @@ class GraphEncoder(nn.Module):
     edge_list = input['edge_list']
     global_features = input['global_features']
     node_features = input['node_features']
-
     senders, receivers = edge_list[..., 0], edge_list[..., 1]
 
+    batch_dims = node_features.shape[:-2]
     ######################
     # Graph Processing
     ######################
@@ -49,9 +49,11 @@ class GraphEncoder(nn.Module):
         edge_features=edge_features,
         senders=senders,
         receivers=receivers,
-        global_features=None,
+        global_features=jnp.tile(
+            self.param('globals', nn.initializers.zeros, (1, self.embed_dim)),
+            [*batch_dims, 1, 1]
+        ),
     )
-
     for i in range(self.num_layers):
       # Graph update
       graph['node_features'] = skip = nn.Dense(
@@ -59,28 +61,25 @@ class GraphEncoder(nn.Module):
       )(graph['node_features'])
       graph = GIN(
           mlp=nn.Sequential([
-              nn.LayerNorm(),
               nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
+              nn.LayerNorm(),
               nn.relu,
               nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-          ])
+          ]),
+          epsilon=0.0,
+          kernel_init=self.kernel_init
       )(**graph)
-      graph['node_features'] = nn.relu(
-          nn.LayerNorm()(graph['node_features'] + skip)
-      )
+      graph['node_features'] = nn.LayerNorm()(graph['node_features'] + skip)
 
       # Global pooling
-      graph['global_features'] = PMA(
-          num_seeds=1,
-          seed_init=nn.initializers.zeros,
-          attention_base=AttentionBlock(
-              embed_dim=self.embed_dim,
-              hidden_dim=None,
-              num_heads=self.num_heads,
-              use_ffn=False,
-              kernel_init=self.kernel_init,
-          )
-      )(x=graph['node_features'])
+      graph['global_features'] = AttentionBlock(
+          embed_dim=self.embed_dim,
+          num_heads=self.num_heads,
+          use_ffn=False,
+          hidden_dim=None,
+          kernel_init=self.kernel_init,
+      )(query=graph['global_features'], key=graph['node_features'])
+
     # Post-processing
     x = rearrange(graph['global_features'], '... n d -> ... (n d)')
 

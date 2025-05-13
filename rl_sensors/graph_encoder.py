@@ -69,7 +69,9 @@ class GraphEncoder(nn.Module):
           epsilon=0.0,
           kernel_init=self.kernel_init
       )(**graph)
-      graph['node_features'] = nn.LayerNorm()(graph['node_features'] + skip)
+      graph['node_features'] = nn.relu(
+          nn.LayerNorm()(graph['node_features'] + skip)
+      )
 
       # Global pooling
       graph['global_features'] = AttentionBlock(

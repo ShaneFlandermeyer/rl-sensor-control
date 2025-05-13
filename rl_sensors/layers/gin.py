@@ -23,8 +23,9 @@ class GIN(nn.Module):
     ############################
     # Pre-processing
     ############################
-    num_nodes = node_features.shape[-2]
     leading_dims = node_features.shape[:-2]
+    num_nodes = node_features.shape[-2]
+    embed_dim = node_features.shape[-1]
 
     segment_sum = jax.ops.segment_sum
     for _ in range(len(leading_dims)):
@@ -37,9 +38,7 @@ class GIN(nn.Module):
         node_features, senders[..., None], axis=-2
     )
     if edge_features is not None:
-      W_e = nn.Dense(
-          node_features.shape[-1], name='W_e', kernel_init=self.kernel_init
-      )
+      W_e = nn.Dense(embed_dim, name='W_e', kernel_init=self.kernel_init)
       send_edges = nn.relu(send_edges + W_e(edge_features))
 
     ####################################
@@ -57,9 +56,7 @@ class GIN(nn.Module):
     )
     
     if global_features is not None:
-      W_g = nn.Dense(
-          node_features.shape[-1], name='W_g', kernel_init=self.kernel_init
-      )
+      W_g = nn.Dense(embed_dim, name='W_g', kernel_init=self.kernel_init)
       new_nodes = nn.relu(new_nodes + W_g(global_features))
 
     return dict(

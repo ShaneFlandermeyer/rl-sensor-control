@@ -82,7 +82,7 @@ class GraphSearchEnv(gym.Env):
     grid_covars = np.diag(np.array([dx, dy])**2)[None, ...].repeat(
         self.n_grid, axis=0
     )
-    
+
     # Randomly initialize search grid
     birth_rate = 1/25
     init_wsum = self.np_random.uniform(1, 5)
@@ -208,7 +208,7 @@ class GraphSearchEnv(gym.Env):
     # Pre-process features
     node_dict.update(
         position=node_dict['position'] / position_scale[None, :],
-        weight=node_dict['weight'] / np.max(node_dict['weight']),
+        weight=node_dict['weight'] / node_dict['weight'].max(),
     )
 
     node_features = np.concatenate(

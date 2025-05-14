@@ -12,7 +12,7 @@ class AttentionBlock(nn.Module):
   embed_dim: int
   hidden_dim: int
   num_heads: int
-  norm_qk: bool = True
+  normalize_qk: bool = False
   use_ffn: bool = True
   kernel_init: nn.initializers.Initializer = nn.initializers.xavier_normal()
   dtype: jnp.dtype = jnp.float32
@@ -34,7 +34,7 @@ class AttentionBlock(nn.Module):
         num_heads=self.num_heads,
         kernel_init=self.kernel_init,
         dtype=self.dtype,
-        normalize_qk=self.norm_qk
+        normalize_qk=self.normalize_qk
     )
     x = query + mha(inputs_q=query, inputs_kv=key, mask=mask)
 
@@ -52,8 +52,6 @@ class AttentionBlock(nn.Module):
       ], name='ffn')
 
       x = x + ffn(x)
-    else:
-      x = mish(x)
 
     return x
 

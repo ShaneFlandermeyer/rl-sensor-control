@@ -50,7 +50,7 @@ class GraphEncoder(nn.Module):
         senders=senders,
         receivers=receivers,
         global_features=jnp.tile(
-            self.param('globals', nn.initializers.zeros, (1, self.embed_dim)),
+            self.param('global', nn.initializers.zeros, (1, self.embed_dim)),
             [*batch_dims, 1, 1]
         ),
     )
@@ -59,15 +59,15 @@ class GraphEncoder(nn.Module):
       graph['node_features'] = skip = nn.Dense(
           self.embed_dim, kernel_init=self.kernel_init
       )(graph['node_features'])
-      graph = GIN(
-          mlp=nn.Sequential([
-              nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-              nn.LayerNorm(),
-              nn.relu,
-              nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-          ]),
-          epsilon=0.0,
-          kernel_init=self.kernel_init
+      graph['node_features'] = nn.relu(
+          graph['node_features'] + graph['global_features']
+      )
+      graph = GATv2(
+          embed_dim=self.embed_dim,
+          num_heads=self.num_heads,
+          share_weights=False,
+          add_self_edges=False,
+          kernel_init=self.kernel_init,
       )(**graph)
       graph['node_features'] = nn.relu(
           nn.LayerNorm()(graph['node_features'] + skip)
@@ -76,13 +76,14 @@ class GraphEncoder(nn.Module):
       # Global pooling
       graph['global_features'] = AttentionBlock(
           embed_dim=self.embed_dim,
+          hidden_dim=None,
           num_heads=self.num_heads,
           use_ffn=False,
-          hidden_dim=None,
           kernel_init=self.kernel_init,
       )(query=graph['global_features'], key=graph['node_features'])
 
     # Post-processing
+    graph['global_features'] = nn.LayerNorm()(graph['global_features'])
     x = rearrange(graph['global_features'], '... n d -> ... (n d)')
 
     return x

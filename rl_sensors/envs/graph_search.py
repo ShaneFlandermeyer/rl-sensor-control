@@ -37,7 +37,7 @@ class GraphSearchEnv(gym.Env):
         global_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(1, 1),
+            shape=(1, 2),
             dtype=np.float64,
         ),
         node_features=gym.spaces.Box(
@@ -248,9 +248,11 @@ class GraphSearchEnv(gym.Env):
     # Global features
     ###########################
     wsum = np.sum(self.search_grid['weights'], keepdims=True)
-    global_features = np.array([
+    wmax = np.max(self.search_grid['weights'], keepdims=True)
+    global_features = np.stack([
         wsum,
-    ])
+        np.log(wmax),
+    ], axis=-1)
 
     obs = dict(
         edge_features=edge_features,

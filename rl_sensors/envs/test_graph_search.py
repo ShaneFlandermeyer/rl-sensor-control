@@ -10,7 +10,7 @@ def greedy_search(obs):
   
   # Select the angle with the highest weight
   max_index = np.argmax(weights)
-  action = np.array([angles[max_index]])/np.pi + np.random.uniform(-0.05, 0.05)
+  action = np.array([angles[max_index]])/np.pi + np.random.uniform(-0.01, 0.01)
   return action
 
 if __name__ == '__main__':
@@ -19,8 +19,8 @@ if __name__ == '__main__':
   obs, _ = env.reset(seed=None)
   total_r = 0
   for i in range(500):
-    # action = greedy_search(obs)
-    action = env.action_space.sample()
+    action = greedy_search(obs)
+    # action = env.action_space.sample()
     obs, reward, _, _, _ = env.step(action)
     # env.render()
     # plt.show()

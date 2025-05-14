@@ -48,7 +48,7 @@ class GIN(nn.Module):
       epsilon = self.param('epsilon', nn.initializers.zeros, (1, 1))
     else:
       epsilon = self.epsilon
-    epsilon = jnp.tile(epsilon, (*node_features.shape[:-2], 1, 1))
+    epsilon = jnp.tile(epsilon, (*leading_dims, 1, 1))
 
     new_nodes = self.mlp(
         (1 + epsilon) * node_features +

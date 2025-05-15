@@ -34,9 +34,12 @@ class AttentionBlock(nn.Module):
         num_heads=self.num_heads,
         kernel_init=self.kernel_init,
         dtype=self.dtype,
-        normalize_qk=self.normalize_qk
     )
-    x = query + mha(inputs_q=query, inputs_kv=key, mask=mask)
+    skip = query
+    if self.normalize_qk:
+      query = nn.LayerNorm()(query)
+      key = nn.LayerNorm()(key)
+    x = skip + mha(inputs_q=query, inputs_kv=key, mask=mask)
 
     # FFN
     if self.use_ffn:

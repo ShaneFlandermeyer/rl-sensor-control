@@ -37,7 +37,7 @@ class GraphSearchEnv(gym.Env):
         global_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(1, 2),
+            shape=(1, 3),
             dtype=np.float64,
         ),
         node_features=gym.spaces.Box(
@@ -155,6 +155,7 @@ class GraphSearchEnv(gym.Env):
               ],
               position=self.search_grid['positions'],
               weight=self.search_grid['weights'],
+              covar=self.search_grid['covars'],
           )
       )
 
@@ -208,7 +209,10 @@ class GraphSearchEnv(gym.Env):
     # Pre-process features
     node_dict.update(
         position=node_dict['position'] / position_scale[None, :],
-        weight=node_dict['weight'] / node_dict['weight'].max(),
+        weight=(
+            (node_dict['weight'] - node_dict['weight'].mean()) /
+            (node_dict['weight'].std() + 1e-6)
+        ),
     )
 
     node_features = np.concatenate(
@@ -247,11 +251,13 @@ class GraphSearchEnv(gym.Env):
     ###########################
     # Global features
     ###########################
-    wsum = np.sum(self.search_grid['weights'], keepdims=True)
-    wmax = np.max(self.search_grid['weights'], keepdims=True)
+    w_sum = np.sum(self.search_grid['weights'], keepdims=True)
+    w_mean = np.max(self.search_grid['weights'], keepdims=True)
+    w_std = np.std(self.search_grid['weights'] + 1e-6, keepdims=True)
     global_features = np.stack([
-        wsum,
-        np.log(wmax),
+        w_sum,
+        np.log(w_mean + 1e-10),
+        np.log(w_std + 1e-10),
     ], axis=-1)
 
     obs = dict(
@@ -352,6 +358,7 @@ class GraphSearchEnv(gym.Env):
     )
     # Plot gaussian mixture (likelihood) as an image
     mixture = np.zeros((nx, ny))
+    norm_weights = ((search_nodes['weight'] - np.mean(search_nodes['weight'])) / (np.std(search_nodes['weight']) + 1e-6))
     for i in range(len(search_nodes)):
       mixture += search_nodes[i]['weight'] * \
           scipy.stats.multivariate_normal.pdf(
@@ -359,6 +366,16 @@ class GraphSearchEnv(gym.Env):
           mean=search_nodes[i]['position'],
           cov=search_nodes[i]['covar'],
       ).reshape((nx, ny))
+      # Print search weight on the plot
+      plt.text(
+          search_nodes[i]['position'][0],
+          search_nodes[i]['position'][1],
+          f"{norm_weights[i]:.2f}",
+          fontsize=8,
+          color='white',
+          ha='center',
+          va='center',
+      )
     plt.imshow(mixture, extent=self.scenario['extents'].ravel(
     ), origin='lower', aspect='auto')
     plt.colorbar()

@@ -74,7 +74,7 @@ class GraphEncoder(nn.Module):
     )
 
     for i in range(self.num_layers):
-      # Layers
+      # Layer definitions
       W_skip = nn.Dense(
           self.embed_dim, kernel_init=self.kernel_init, name=f'W_skip_{i}'
       )

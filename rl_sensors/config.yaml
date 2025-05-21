@@ -5,8 +5,8 @@ hydra:
     dir: outputs/${hydra.job.name}/${now:%Y-%m-%d_%H-%M-%S}
 
 seed: 0
-max_steps: 1_000_000
-buffer_size: 1_000_000
+max_steps: 400_000
+buffer_size: 400_000
 save_interval_steps: 100000
 log_interval_steps: 10000
 
@@ -21,7 +21,7 @@ env:
 
 encoder:
   embed_dim: 128
-  num_layers: 2
+  num_layers: 1
   num_heads: 4
   learning_rate: 3e-4
   tabulate: True

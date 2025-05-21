@@ -11,7 +11,7 @@ from rl_sensors.layers.activation import mish
 class GATv2(nn.Module):
   """
   Implementation of GATv2 from [1] with global and edge features.
-  
+
   [1] https://arxiv.org/abs/2105.14491
   """
   embed_dim: int
@@ -38,12 +38,12 @@ class GATv2(nn.Module):
         senders=senders,
         receivers=receivers,
     )
+    batch_dims = node_features.shape[:-2]
     num_nodes = node_features.shape[-2]
-    leading_dims = node_features.shape[:-2]
 
     segment_sum = jax.ops.segment_sum
     segment_softmax = segment_util.segment_softmax
-    for _ in range(len(leading_dims)):
+    for _ in range(len(batch_dims)):
       segment_sum = jax.vmap(segment_sum, in_axes=(0, 0, None))
       segment_softmax = jax.vmap(segment_softmax, in_axes=(0, 0, None))
 
@@ -66,7 +66,7 @@ class GATv2(nn.Module):
 
     if self.add_self_edges:
       node_inds = jnp.broadcast_to(
-          jnp.arange(num_nodes), leading_dims + (num_nodes,)
+          jnp.arange(num_nodes), batch_dims + (num_nodes,)
       )
       receivers = jnp.concatenate([receivers, node_inds], axis=-1)
       send_edges = jnp.concatenate([send_edges, send_nodes], axis=-2)

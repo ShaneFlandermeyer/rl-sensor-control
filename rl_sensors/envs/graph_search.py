@@ -67,7 +67,7 @@ class GraphSearchEnv(gym.Env):
     )
     self.sensor = dict(
         position=np.zeros(2),
-        beamwidth=10*np.pi/180,
+        beamwidth=20*np.pi/180,
         steering_angle=0
     )
 

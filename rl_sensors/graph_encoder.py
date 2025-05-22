@@ -59,27 +59,23 @@ class GraphEncoder(nn.Module):
         nn.LayerNorm(),
         nn.relu,
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-        nn.LayerNorm(),
     ])(graph['node_features'])
     graph['global_features'] = AttentionBlock(
         embed_dim=self.embed_dim,
         num_heads=self.num_heads,
         hidden_dim=self.embed_dim,
-        normalize_qk=False,
+        normalize_qk=True,
         use_ffn=False,
         kernel_init=self.kernel_init,
     )(query=graph['global_features'], key=graph['node_features'])
-    graph['global_features'] = nn.relu(
-        nn.LayerNorm()(graph['global_features'])
+    graph['node_features'] = nn.relu(
+        graph['node_features'] + graph['global_features']
     )
 
     for i in range(self.num_layers):
       # Layer definitions
       W_skip = nn.Dense(
           self.embed_dim, kernel_init=self.kernel_init, name=f'W_skip_{i}'
-      )
-      W_g = nn.Dense(
-          self.embed_dim, kernel_init=self.kernel_init, name=f'W_g_{i}'
       )
       gnn = GATv2(
           embed_dim=self.embed_dim,
@@ -90,20 +86,17 @@ class GraphEncoder(nn.Module):
       )
 
       # Graph update
+      graph['node_features'] = nn.LayerNorm()(graph['node_features'])
       skip = W_skip(graph['node_features'])
-      graph['node_features'] = nn.LayerNorm()(
-          graph['node_features'] + W_g(graph['global_features'])
-      )
       graph = gnn(**graph)
       graph['node_features'] = nn.relu(graph['node_features'] + skip)
 
     # Decode
-    graph['node_features'] = nn.LayerNorm()(graph['node_features'])
     graph['global_features'] = AttentionBlock(
         embed_dim=self.embed_dim,
         num_heads=self.num_heads,
         hidden_dim=self.embed_dim,
-        normalize_qk=False,
+        normalize_qk=True,
         use_ffn=False,
         kernel_init=self.kernel_init,
     )(query=graph['global_features'], key=graph['node_features'])
@@ -134,6 +127,6 @@ if __name__ == '__main__':
       nn.Dense(latent_dim)
       #   NormedLinear(latent_dim, activation=nn.relu),
   ])
-  
+
   model.init(jax.random.PRNGKey(0), obs)
   print(model.tabulate(jax.random.key(0), obs, compute_flops=True))

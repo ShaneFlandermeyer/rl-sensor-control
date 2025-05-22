@@ -65,7 +65,7 @@ class GraphEncoder(nn.Module):
         num_heads=self.num_heads,
         hidden_dim=self.embed_dim,
         normalize_qk=True,
-        use_ffn=False,
+        use_ffn=True,
         kernel_init=self.kernel_init,
     )(query=graph['global_features'], key=graph['node_features'])
     graph['node_features'] = nn.relu(

@@ -28,8 +28,10 @@ class GraphEncoder(nn.Module):
     ######################
     edge_features = input['edge_features']
     edge_list = input['edge_list']
+    edge_mask = input['edge_mask']
     global_features = input['global_features']
     node_features = input['node_features']
+    node_mask = input['node_mask']
     senders, receivers = edge_list[..., 0], edge_list[..., 1]
 
     batch_dims = node_features.shape[:-2]
@@ -40,6 +42,15 @@ class GraphEncoder(nn.Module):
           global_features.repeat(num_nodes, axis=-2),
       ], axis=-1
       )
+
+    # Add a dummy node for padding edges
+    pad_node = jnp.zeros((*batch_dims, 1, node_features.shape[-1]))
+    pad_mask = jnp.zeros((*batch_dims, 1))
+    node_features = jnp.concatenate([node_features, pad_node], axis=-2)
+    node_mask = jnp.concatenate([node_mask, pad_mask], axis=-1)
+    senders = jnp.where(edge_mask, senders, -1)
+    receivers = jnp.where(edge_mask, receivers, -1)
+
     graph = dict(
         node_features=node_features,
         edge_features=edge_features,
@@ -67,7 +78,12 @@ class GraphEncoder(nn.Module):
         normalize_qk=True,
         use_ffn=True,
         kernel_init=self.kernel_init,
-    )(query=graph['global_features'], key=graph['node_features'])
+    )(
+        query=graph['global_features'],
+        key=graph['node_features'],
+        query_mask=None,
+        key_mask=node_mask,
+    )
     graph['node_features'] = nn.relu(
         graph['node_features'] + graph['global_features']
     )
@@ -99,7 +115,12 @@ class GraphEncoder(nn.Module):
         normalize_qk=True,
         use_ffn=False,
         kernel_init=self.kernel_init,
-    )(query=graph['global_features'], key=graph['node_features'])
+    )(
+        query=graph['global_features'],
+        key=graph['node_features'],
+        query_mask=None,
+        key_mask=node_mask,
+    )
     graph['global_features'] = nn.relu(
         nn.LayerNorm()(graph['global_features'])
     )
@@ -111,7 +132,7 @@ class GraphEncoder(nn.Module):
 if __name__ == '__main__':
   env = gym.vector.SyncVectorEnv([lambda: GraphSearchEnv() for _ in range(1)])
   obs, _ = env.reset(seed=0)
-  for i in range(10):
+  for i in range(0):
     obs = env.step(env.action_space.sample())[0]
 
   embed_dim = 128

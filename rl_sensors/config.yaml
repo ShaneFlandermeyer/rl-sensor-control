@@ -21,7 +21,7 @@ env:
 
 encoder:
   embed_dim: 128
-  num_layers: 1
+  num_layers: 2
   num_heads: 4
   learning_rate: 3e-4
   tabulate: True

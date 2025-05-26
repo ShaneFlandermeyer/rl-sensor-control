@@ -33,9 +33,11 @@ class GraphEncoder(nn.Module):
     node_features = input['node_features']
     node_mask = input['node_mask']
     senders, receivers = edge_list[..., 0], edge_list[..., 1]
-
+    
     batch_dims = node_features.shape[:-2]
     num_nodes = node_features.shape[-2]
+
+    # Add global features to node representation
     if global_features is not None:
       node_features = jnp.concatenate([
           node_features,
@@ -61,6 +63,7 @@ class GraphEncoder(nn.Module):
             [*batch_dims, 1, 1]
         ),
     )
+    
     ######################
     # Graph Processing
     ######################

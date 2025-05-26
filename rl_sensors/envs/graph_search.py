@@ -18,27 +18,24 @@ class GraphSearchEnv(gym.Env):
     # Search grid config
     self.nx_grid = 8
     self.ny_grid = 8
-    self.k_nearest = 4
     self.n_grid = self.nx_grid * self.ny_grid
 
     # Agent config
-    self.max_agent_nodes = 10
+    self.max_agent_nodes = 20
     self.top_k_search_update = 4
 
     self.max_nodes = self.n_grid + self.max_agent_nodes
     self.max_edges = (
-        # Search k nearest neighbors
-        self.k_nearest * self.n_grid
         # Agent transition
         + 2*(self.max_agent_nodes - 1)
         # Agent-search update
-        + 2*self.top_k_search_update*self.max_agent_nodes
+        + 2*(self.top_k_search_update*self.max_agent_nodes)
     )
     self.observation_space = gym.spaces.Dict(
         edge_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_edges, 5),
+            shape=(self.max_edges, 4),
             dtype=np.float64,
         ),
         edge_list=gym.spaces.MultiDiscrete(
@@ -177,39 +174,6 @@ class GraphSearchEnv(gym.Env):
               covar=self.search_grid['covars'],
           )
       )
-      search_nodes = self.graph.vs(type_eq='search')
-
-      # Create static edges to K nearest neighbors
-      nearest_search_dists = np.linalg.norm(
-          self.search_grid['positions'][:, None] -
-          self.search_grid['positions'][None, :],
-          axis=-1
-      )
-      nearest_search_dists[
-          np.diag_indices(self.search_grid['num_components'])
-      ] = np.inf
-      knn_inds = np.argpartition(
-          nearest_search_dists, self.k_nearest, axis=1
-      )[:, :self.k_nearest]
-      src_pos = np.array([
-          self.graph.vs['position'][edge.source] for edge in self.graph.es
-      ])
-      dst_pos = np.array([
-          self.graph.vs['position'][edge.target] for edge in self.graph.es
-      ])
-      rel_pos = src_pos - dst_pos
-      self.graph.add_edges(
-          es=[
-              (search_nodes[knn_inds[i, j]], search_nodes[i])
-              for i in range(self.search_grid['num_components'])
-              for j in range(self.k_nearest)
-          ],
-          attributes=dict(
-              class_label=np.array([[1, 0, 0]]),
-              distance=np.linalg.norm(rel_pos, axis=-1),
-              pd=0.0,
-          )
-      )
     else:
       search_nodes = self.graph.vs(type_eq='search')
       search_nodes['weight'] = self.search_grid['weights']
@@ -246,7 +210,7 @@ class GraphSearchEnv(gym.Env):
               (current_agent, last_agent),
           ],
           attributes=dict(
-              class_label=np.array([[0, 1, 0]]),
+              class_label=np.array([[1, 0]]),
               distance=agent_transition_dist,
               pd=0.0,
           )
@@ -287,7 +251,7 @@ class GraphSearchEnv(gym.Env):
                 for i in detected_search
             ],
             attributes=dict(
-                class_label=np.array([[0, 0, 1]]),
+                class_label=np.array([[0, 1]]),
                 distance=search_update_dists,
                 pd=search_pd[detected_search],
             )
@@ -352,40 +316,53 @@ class GraphSearchEnv(gym.Env):
     # Edges
     ###########################
     edges = self.graph.es
-    edge_keys = [
-        'class_label',
-        'distance',
-        'pd',
-    ]
-    edge_dict = {
-        k: np.array(edges[k]).reshape((len(edges), -1)) for k in edge_keys
-    }
-    # Pre-process features
-    edge_dict.update(
-        distance=edge_dict['distance'] / distance_scale
-    )
-    edge_features = np.concatenate(
-        [
-            edge_dict[key].astype(
-                self.observation_space['edge_features'].dtype
-            ) for key in edge_keys
-        ],
-        axis=-1
-    )
-    edge_list = np.array(self.graph.get_edgelist())
-
-    # Pad edges
-    edge_features = np.pad(
-        edge_features,
-        ((0, self.max_edges - len(edges)), (0, 0)),
-        mode='constant', constant_values=0,
-    )
-    edge_list = np.pad(
-        edge_list,
-        ((0, self.max_edges - len(edges)), (0, 0)),
-        mode='constant', constant_values=-1,
-    )
-    edge_mask = np.arange(self.max_edges) < len(edges)
+    if len(edges) > 0:
+      edge_keys = [
+          'class_label',
+          'distance',
+          'pd',
+      ]
+      edge_dict = {
+          k: np.array(edges[k]).reshape((len(edges), -1)) for k in edge_keys
+      }
+      # Pre-process features
+      edge_dict.update(
+          distance=edge_dict['distance'] / distance_scale
+      )
+      edge_features = np.concatenate(
+          [
+              edge_dict[key].astype(
+                  self.observation_space['edge_features'].dtype
+              ) for key in edge_keys
+          ],
+          axis=-1
+      )
+      edge_list = np.array(self.graph.get_edgelist())
+      # Pad edges
+      edge_features = np.pad(
+          edge_features,
+          ((0, self.max_edges - len(edges)), (0, 0)),
+          mode='constant', constant_values=0,
+      )
+      edge_list = np.pad(
+          edge_list,
+          ((0, self.max_edges - len(edges)), (0, 0)),
+          mode='constant', constant_values=-1,
+      )
+      edge_mask = np.arange(self.max_edges) < len(edges)
+    else:
+      edge_features = np.zeros(
+          self.observation_space['edge_features'].shape,
+          dtype=self.observation_space['edge_features'].dtype
+      )
+      edge_list = np.zeros(
+          self.observation_space['edge_list'].shape,
+          dtype=self.observation_space['edge_list'].dtype
+      )
+      edge_mask = np.zeros(
+          self.observation_space['edge_mask'].shape,
+          dtype=self.observation_space['edge_mask'].dtype
+      )
 
     ###########################
     # Global features

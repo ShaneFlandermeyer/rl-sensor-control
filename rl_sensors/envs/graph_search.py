@@ -35,7 +35,7 @@ class GraphSearchEnv(gym.Env):
         edge_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_edges, 4),
+            shape=(self.max_edges, 5),
             dtype=np.float64,
         ),
         edge_list=gym.spaces.MultiDiscrete(
@@ -46,7 +46,7 @@ class GraphSearchEnv(gym.Env):
         global_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(1, 3),
+            shape=(1, 2),
             dtype=np.float64,
         ),
         node_features=gym.spaces.Box(
@@ -77,7 +77,7 @@ class GraphSearchEnv(gym.Env):
     )
     self.sensor = dict(
         position=np.zeros(2),
-        beamwidth=20*np.pi/180,
+        beamwidth=10*np.pi/180,
         steering_angle=0,
         action=np.zeros(1),
     )
@@ -161,11 +161,11 @@ class GraphSearchEnv(gym.Env):
       self.graph.add_vertices(
           n=self.search_grid['num_components'],
           attributes=dict(
-              type='search',
               name=[
                   f'search_{i}'
                   for i in range(self.search_grid['num_components'])
               ],
+              type='search',
               timestep=self.timestep,
               class_label=np.array([[1, 0]]),
               position=self.search_grid['positions'],
@@ -183,20 +183,19 @@ class GraphSearchEnv(gym.Env):
     # Agent nodes
     ##############################
     self.graph.add_vertex(
-        type='agent',
         name=f'agent_{self.timestep}',
+        type='agent',
         timestep=self.timestep,
         class_label=np.array([0, 1]),
         position=self.sensor['position'],
         weight=0.0,
         sensor_action=self.sensor['action'],
     )
-
+    current_agent = self.graph.vs(
+        type_eq='agent', timestep_eq=self.timestep
+    )[0]
     if self.timestep > 0:
       # Add an edge from the previous agent node to the current
-      current_agent = self.graph.vs(
-          type_eq='agent', timestep_eq=self.timestep
-      )[0]
       last_agent = self.graph.vs(
           type_eq='agent', timestep_eq=self.timestep-1
       )[0]
@@ -204,23 +203,35 @@ class GraphSearchEnv(gym.Env):
           np.array(current_agent['position']) -
           np.array(last_agent['position']),
       )
-      self.graph.add_edges(
-          es=[
-              (last_agent, current_agent),
-              (current_agent, last_agent),
-          ],
-          attributes=dict(
-              class_label=np.array([[1, 0]]),
-              distance=agent_transition_dist,
-              pd=0.0,
-          )
+      self.graph.add_edge(
+          type='transition',
+          source=last_agent,
+          target=current_agent,
+          class_label=np.array([1, 0]),
+          distance=agent_transition_dist,
+          angle=np.arctan2(
+              last_agent['position'][1] - current_agent['position'][1],
+              last_agent['position'][0] - current_agent['position'][0]
+          ),
+          pd=0.0,
       )
-    # Remove old agent nodes
-    agent_nodes = self.graph.vs(type_eq='agent')
-    if len(agent_nodes) > self.max_agent_nodes:
-      self.graph.delete_vertices(agent_nodes[:-self.max_agent_nodes])
+      self.graph.add_edge(
+          type='transition',
+          source=current_agent,
+          target=last_agent,
+          class_label=np.array([1, 0]),
+          distance=agent_transition_dist,
+          angle=np.arctan2(
+              current_agent['position'][1] - last_agent['position'][1],
+              current_agent['position'][0] - last_agent['position'][0]
+          ),
+          pd=0.0,
+      )
 
     # Search detection edges
+    search_nodes = self.graph.vs(type_eq='search')
+    search_pos = np.array(search_nodes['position'])
+    sensor_pos = np.array(self.sensor['position'])
     if self.timestep > 0:
       search_pd = self.pd(
           object_state=self.search_grid,
@@ -236,26 +247,47 @@ class GraphSearchEnv(gym.Env):
         ]
 
         # NOTE: Assumes search nodes have the same ordering as the search grid
-        search_nodes = self.graph.vs(type_eq='search')
         search_update_dists = np.linalg.norm(
-            np.array(search_nodes['position'])[detected_search] -
-            np.array(self.sensor['position']),
-            axis=-1
+            search_pos[detected_search] - sensor_pos, axis=-1
         )
-        current_agent = self.graph.vs(
-            type_eq='agent', timestep_eq=self.timestep
-        )[0]
+
         self.graph.add_edges(
             es=[
                 (search_nodes[i], current_agent)
                 for i in detected_search
             ],
             attributes=dict(
+                type='update',
                 class_label=np.array([[0, 1]]),
-                distance=search_update_dists,
                 pd=search_pd[detected_search],
+                distance=search_update_dists,
+                angle=np.arctan2(
+                    search_pos[detected_search, 1] - sensor_pos[1],
+                    search_pos[detected_search, 0] - sensor_pos[0]
+                )
             )
         )
+        self.graph.add_edges(
+            es=[
+                (current_agent, search_nodes[i])
+                for i in detected_search
+            ],
+            attributes=dict(
+                type='update',
+                class_label=np.array([[0, 1]]),
+                pd=search_pd[detected_search],
+                distance=search_update_dists,
+                angle=np.arctan2(
+                    sensor_pos[1] - search_pos[detected_search, 1],
+                    sensor_pos[0] - search_pos[detected_search, 1]
+                ),
+            )
+        )
+
+    # Remove old agent nodes
+    agent_nodes = self.graph.vs(type_eq='agent')
+    if len(agent_nodes) > self.max_agent_nodes:
+      self.graph.delete_vertices(agent_nodes[:-self.max_agent_nodes])
 
     ###############################
     # Shared features
@@ -287,12 +319,7 @@ class GraphSearchEnv(gym.Env):
     node_dict.update(
         age=np.log1p(node_dict['age']),
         position=node_dict['position'] / position_scale[None, :],
-        weight=np.where(
-            np.array(nodes['type'])[:, None] == 'search',
-            (node_dict['weight'] - node_dict['weight'].mean()) /
-            (node_dict['weight'].std() + 1e-6),
-            0.0,
-        ),
+        weight=node_dict['weight'] / (node_dict['weight'].max() + 1e-10),
     )
 
     node_features = np.concatenate(
@@ -319,8 +346,9 @@ class GraphSearchEnv(gym.Env):
     if len(edges) > 0:
       edge_keys = [
           'class_label',
-          'distance',
           'pd',
+          'distance',
+          'angle',
       ]
       edge_dict = {
           k: np.array(edges[k]).reshape((len(edges), -1)) for k in edge_keys
@@ -368,12 +396,10 @@ class GraphSearchEnv(gym.Env):
     # Global features
     ###########################
     w_sum = np.sum(self.search_grid['weights'], keepdims=True)
-    w_mean = np.max(self.search_grid['weights'], keepdims=True)
-    w_std = np.std(self.search_grid['weights'] + 1e-6, keepdims=True)
+    w_max = np.max(self.search_grid['weights'], keepdims=True)
     global_features = np.stack([
         w_sum,
-        np.log(w_mean + 1e-10),
-        np.log(w_std + 1e-10),
+        np.log(w_max + 1e-10),
     ], axis=-1)
 
     obs = dict(
@@ -476,10 +502,8 @@ class GraphSearchEnv(gym.Env):
     )
     # Plot gaussian mixture (likelihood) as an image
     mixture = np.zeros((nx, ny))
-    norm_weights = (
-        (search_nodes['weight'] - np.mean(search_nodes['weight'])) /
-        (np.std(search_nodes['weight']) + 1e-6)
-    )
+    norm_weights = search_nodes['weight'] / \
+        (np.max(search_nodes['weight']) + 1e-10)
     for i in range(len(search_nodes)):
       mixture += search_nodes[i]['weight'] * \
           scipy.stats.multivariate_normal.pdf(

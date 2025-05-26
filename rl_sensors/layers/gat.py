@@ -17,7 +17,6 @@ class GATv2(nn.Module):
   embed_dim: int
   num_heads: int
   share_weights: bool = True
-  add_self_edges: bool = False
   kernel_init: nn.initializers.Initializer = nn.initializers.xavier_normal()
 
   @nn.compact
@@ -63,14 +62,6 @@ class GATv2(nn.Module):
     if edge_features is not None:
       W_e = nn.Dense(self.embed_dim, name='W_e', kernel_init=self.kernel_init)
       x += W_e(edge_features)
-
-    if self.add_self_edges:
-      node_inds = jnp.broadcast_to(
-          jnp.arange(num_nodes), batch_dims + (num_nodes,)
-      )
-      receivers = jnp.concatenate([receivers, node_inds], axis=-1)
-      send_edges = jnp.concatenate([send_edges, send_nodes], axis=-2)
-      x = jnp.concatenate([x, send_nodes + recv_nodes], axis=-2)
 
     ############################
     # Attention

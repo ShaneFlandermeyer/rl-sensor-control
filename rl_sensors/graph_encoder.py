@@ -100,7 +100,6 @@ class GraphEncoder(nn.Module):
           embed_dim=self.embed_dim,
           num_heads=self.num_heads,
           share_weights=False,
-          add_self_edges=False,
           kernel_init=self.kernel_init,
       )
 

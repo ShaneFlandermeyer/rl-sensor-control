@@ -80,16 +80,20 @@ class GraphEncoder(nn.Module):
         num_heads=self.num_heads,
         hidden_dim=self.embed_dim,
         normalize_qk=True,
-        use_ffn=True,
+        use_ffn=False,
         kernel_init=self.kernel_init,
     )(
-        query=graph['global_features'],
-        key=graph['node_features'],
-        query_mask=None,
-        key_mask=node_mask,
+        query=graph['global_features'], key=graph['node_features'],
+        query_mask=None, key_mask=node_mask,
     )
+    graph['node_features'] = jnp.concatenate([
+        graph['node_features'],
+        graph['global_features'].repeat(num_nodes, axis=-2),
+    ], axis=-1)
     graph['node_features'] = nn.relu(
-        graph['node_features'] + graph['global_features']
+        nn.Dense(
+            self.embed_dim, kernel_init=self.kernel_init
+        )(graph['node_features'])
     )
 
     for i in range(self.num_layers):

@@ -370,7 +370,8 @@ class GraphSearchEnv(gym.Env):
       }
       # Pre-process features
       edge_dict.update(
-          distance=edge_dict['distance'] / distance_scale
+          distance=edge_dict['distance'] / distance_scale,
+          angle=edge_dict['angle'] / np.pi,
       )
       edge_features = np.concatenate(
           [

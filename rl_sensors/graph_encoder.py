@@ -12,7 +12,7 @@ from rl_sensors.layers.attention import PMA, AttentionBlock
 from rl_sensors.layers.gat import GATv2
 from rl_sensors.layers.gin import GIN
 from rl_sensors.envs.graph_search import GraphSearchEnv
-from rl_sensors.layers.simba import Simba
+from rl_sensors.layers.activation import mish
 
 
 class GraphEncoder(nn.Module):
@@ -71,8 +71,8 @@ class GraphEncoder(nn.Module):
     # Encode
     graph['node_features'] = nn.Sequential([
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-        nn.LayerNorm(),
-        nn.relu,
+        nn.RMSNorm(),
+        mish,
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
     ])(graph['node_features'])
     graph['global_features'] = AttentionBlock(
@@ -80,20 +80,14 @@ class GraphEncoder(nn.Module):
         num_heads=self.num_heads,
         hidden_dim=self.embed_dim,
         normalize_qk=True,
-        use_ffn=False,
+        use_ffn=True,
         kernel_init=self.kernel_init,
     )(
         query=graph['global_features'], key=graph['node_features'],
-        query_mask=None, key_mask=node_mask,
+        query_mask=None, key_mask=node_mask
     )
-    graph['node_features'] = jnp.concatenate([
-        graph['node_features'],
-        graph['global_features'].repeat(num_nodes, axis=-2),
-    ], axis=-1)
-    graph['node_features'] = nn.relu(
-        nn.Dense(
-            self.embed_dim, kernel_init=self.kernel_init
-        )(graph['node_features'])
+    graph['node_features'] = mish(
+        graph['node_features'] + graph['global_features']
     )
 
     for i in range(self.num_layers):
@@ -104,15 +98,15 @@ class GraphEncoder(nn.Module):
       gnn = GATv2(
           embed_dim=self.embed_dim,
           num_heads=self.num_heads,
-          share_weights=False,
+          share_weights=True,
           kernel_init=self.kernel_init,
       )
 
       # Graph update
-      graph['node_features'] = nn.LayerNorm()(graph['node_features'])
+      graph['node_features'] = nn.RMSNorm()(graph['node_features'])
       skip = W_skip(graph['node_features'])
       graph = gnn(**graph)
-      graph['node_features'] = nn.relu(graph['node_features'] + skip)
+      graph['node_features'] = mish(graph['node_features'] + skip)
 
     # Decode
     graph['global_features'] = AttentionBlock(
@@ -123,14 +117,10 @@ class GraphEncoder(nn.Module):
         use_ffn=False,
         kernel_init=self.kernel_init,
     )(
-        query=graph['global_features'],
-        key=graph['node_features'],
-        query_mask=None,
-        key_mask=node_mask,
+        query=graph['global_features'], key=graph['node_features'],
+        query_mask=None, key_mask=node_mask
     )
-    graph['global_features'] = nn.relu(
-        nn.LayerNorm()(graph['global_features'])
-    )
+    graph['global_features'] = mish(nn.RMSNorm()(graph['global_features']))
     x = rearrange(graph['global_features'], '... n d -> ... (n d)')
 
     return x
@@ -153,7 +143,7 @@ if __name__ == '__main__':
           num_heads=num_heads,
       ),
       nn.Dense(latent_dim)
-      #   NormedLinear(latent_dim, activation=nn.relu),
+      #   NormedLinear(latent_dim, activation=mish),
   ])
 
   model.init(jax.random.PRNGKey(0), obs)

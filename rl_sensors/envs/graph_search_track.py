@@ -106,7 +106,7 @@ class GraphSearchTrackEnv(gym.Env):
     self.vel_inds = [1, 3]
     self.transition_model = ConstantVelocity(
         state_dim=4,
-        w=0,
+        w=1e-4,
         position_inds=self.pos_inds,
         velocity_inds=self.vel_inds,
         noise_type='continuous',
@@ -119,9 +119,10 @@ class GraphSearchTrackEnv(gym.Env):
     )
     self.state_estimator = UnscentedKalmanFilter(
         transition_model=self.transition_model,
-        measurement_model=None,
+        measurement_model=self.measurement_model,
         state_subtract_fn=np.subtract,
-        measurement_subtract_fn=None,
+        state_mean_fn=None,
+        measurement_subtract_fn=np.subtract,
         measurement_mean_fn=None,
         sigma_params=dict(alpha=1e-3, beta=2, kappa=0),
     )
@@ -181,7 +182,7 @@ class GraphSearchTrackEnv(gym.Env):
     # Update simulation
     self.update_sensor_state(action)
     self.update_ground_truth(dt=self.scenario['dt'])
-    Zk = self.measure()
+    measurements = self.measure()
 
     # Predict step: Surivival and birth
     self.tracker = self.tracker.predict(
@@ -200,14 +201,22 @@ class GraphSearchTrackEnv(gym.Env):
     )
 
     # Update step
-    search_pd = self.pd(
-        object_state=self.tracker.poisson.state,
-        sensor=self.sensor,
-        pos_inds=self.pos_inds,
+    # TODO: Nonzero false alarm rate
+    self.tracker = self.tracker.update(
+        measurements=measurements,
+        state_estimator=self.state_estimator,
+        pd_model=functools.partial(
+            self.pd, sensor=self.sensor, pos_inds=self.pos_inds
+        ),
+        lambda_fa=0.0,
+        pg=1.0,
     )
-    # TODO: Replace with TOMB/P update
-    self.tracker.poisson.state.weight = (1 - search_pd) * \
-        self.tracker.poisson.state.weight
+    if len(self.tracker.mb) > 0:
+        self.tracker.mb, self.tracker.mb_metadata = self.tracker.mb.prune(
+            valid_fn=lambda mb: mb.r > 1e-4,
+            meta=self.tracker.mb_metadata,
+        )
+    
 
     # Env update
     self.update_graph()

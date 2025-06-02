@@ -12,6 +12,8 @@ from motpy.estimators.kalman.sigma_points import (merwe_scaled_sigma_points,
 from motpy.rfs.tomb import TOMBP
 from motpy.estimators.kalman.ukf import UnscentedKalmanFilter
 from motpy.models.transition import ConstantVelocity
+from motpy.models.measurement import LinearMeasurementModel
+import functools
 
 
 class GraphSearchTrackEnv(gym.Env):
@@ -105,6 +107,12 @@ class GraphSearchTrackEnv(gym.Env):
         velocity_inds=self.vel_inds,
         noise_type='continuous',
     )
+    # TODO: Use range-bearing model
+    self.measurement_model = LinearMeasurementModel(
+        state_dim=4,
+        covar=10*np.eye(2),
+        measured_dims=self.pos_inds,
+    )
     self.state_estimator = UnscentedKalmanFilter(
         transition_model=self.transition_model,
         measurement_model=None,
@@ -115,7 +123,6 @@ class GraphSearchTrackEnv(gym.Env):
     )
 
     # Birth distribution
-    # TODO: Add velocity to birth distribution
     xmin, xmax = self.scenario['extents'][0]
     ymin, ymax = self.scenario['extents'][1]
     x = np.linspace(xmin, xmax, self.nx_grid)
@@ -171,6 +178,7 @@ class GraphSearchTrackEnv(gym.Env):
     # Update simulation
     self.update_sensor_state(action)
     self.update_ground_truth(dt=self.scenario['dt'])
+    Zk = self.measure()
 
     # Predict step: Surivival and birth
     search_ps = self.ps(
@@ -179,6 +187,13 @@ class GraphSearchTrackEnv(gym.Env):
         pos_inds=self.pos_inds,
     )
     # TODO: Replace with TOMB/P predict
+    # self.tracker.predict(
+    #     state_estimator=self.state_estimator,
+    #     dt=self.scenario['dt'],
+    #     ps_model=functools.partial(
+    #         self.ps, scenario=self.scenario, pos_inds=self.pos_inds
+    #     ),
+    # )
     self.tracker.poisson.state.weight = \
         search_ps * self.tracker.poisson.state.weight + \
         self.tracker.poisson.birth_distribution.weight
@@ -208,10 +223,10 @@ class GraphSearchTrackEnv(gym.Env):
     #############################
     if self.timestep == 0:
       self.graph.add_vertices(
-          n=self.tracker.poisson.size,
+          n=self.tracker.poisson.shape[0],
           attributes=dict(
               name=[
-                  f'search_{i}' for i in range(self.tracker.poisson.size)
+                  f'search_{i}' for i in range(self.tracker.poisson.shape[0])
               ],
               type='search',
               timestep=self.timestep,
@@ -484,7 +499,7 @@ class GraphSearchTrackEnv(gym.Env):
           scenario=self.scenario,
           pos_inds=self.pos_inds,
       )
-      survived = self.np_random.uniform(size=ps.shape) < ps
+      survived = self.np_random.uniform(size=len(self.ground_truth)) < ps
       for i, path in enumerate(self.ground_truth.copy()):
         if survived[i]:
           path.append(next_states[i])
@@ -496,18 +511,38 @@ class GraphSearchTrackEnv(gym.Env):
     if num_birth > 0:
       birth_distribution = self.tracker.poisson.birth_distribution
       inds = self.np_random.choice(
-          a=np.arange(birth_distribution.size),
+          a=np.arange(birth_distribution.shape[0]),
           size=num_birth,
           p=birth_distribution.weight / np.sum(birth_distribution.weight)
       )
       new_states = birth_distribution[inds].sample(
-          num_points=1, rng=self.np_random, max_distance=1
+          num_points=1, rng=self.np_random
+      )
+      # Clip to scenario extents
+      new_states[..., self.pos_inds] = np.clip(
+          new_states[..., self.pos_inds],
+          self.scenario['extents'][:, 0],
+          self.scenario['extents'][:, 1]
       )
       self.ground_truth.extend([list(state) for state in new_states])
 
   def measure(self) -> List[np.ndarray]:
-    # TODO: Object
-    pass
+
+    # Measure ground truth with the current sensor state
+    if len(self.ground_truth) == 0:
+      return []
+
+    states = np.array([path[-1] for path in self.ground_truth])
+    # TODO: Use spherical measurement model
+    Z = self.measurement_model(states, noise=False)
+
+    pd = self.pd(states, sensor=self.sensor, pos_inds=self.pos_inds)
+    detected = self.np_random.uniform(
+        size=len(self.ground_truth)
+    ) < pd
+    Z = Z[detected]
+
+    return Z
 
   @staticmethod
   def pd(
@@ -515,29 +550,33 @@ class GraphSearchTrackEnv(gym.Env):
       sensor: Dict[str, Any],
       pos_inds: List[int],
   ) -> np.ndarray:
-    n = 2
-    alpha, beta, kappa = 0.5, 2, 0
-    points = merwe_scaled_sigma_points(
-        x=object_state.mean[:, pos_inds],
-        P=object_state.covar[
-            np.ix_(np.arange(object_state.size), pos_inds, pos_inds)
-        ],
-        alpha=alpha,
-        beta=beta,
-        kappa=kappa
-    )
-    weights = merwe_sigma_weights(
-        ndim_state=n, alpha=alpha, beta=beta, kappa=kappa)[0]
-    weights = abs(weights) / abs(weights).sum()
-    weights = weights[None, :]
+    if isinstance(object_state, Gaussian):
+      n = 2
+      alpha, beta, kappa = 0.5, 2, 0
+      x = merwe_scaled_sigma_points(
+          x=object_state.mean[:, pos_inds],
+          P=object_state.covar[
+              np.ix_(np.arange(object_state.shape[0]), pos_inds, pos_inds)
+          ],
+          alpha=alpha,
+          beta=beta,
+          kappa=kappa
+      )
+      weights = merwe_sigma_weights(
+          ndim_state=n, alpha=alpha, beta=beta, kappa=kappa)[0]
+      weights = abs(weights) / abs(weights).sum()
+      weights = weights[None, :]
+    else:
+      x = object_state[:, pos_inds]
+      weights = np.ones((x.shape[0], 1))
 
+    # Detect objects within beam
     sensor_pos = sensor['position']
     beamwidth = sensor['beamwidth']
     steering_angle = sensor['steering_angle']
-
     az = np.arctan2(
-        points[..., 1] - sensor_pos[1],
-        points[..., 0] - sensor_pos[0]
+        x[..., 1] - sensor_pos[1],
+        x[..., 0] - sensor_pos[0]
     )
     angle_diff = np.mod((az - steering_angle) + np.pi, 2*np.pi) - np.pi
     in_region = abs(angle_diff) <= beamwidth/2

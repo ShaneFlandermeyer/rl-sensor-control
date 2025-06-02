@@ -1,3 +1,4 @@
+import functools
 from typing import *
 
 import gymnasium as gym
@@ -5,17 +6,16 @@ import igraph
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-from motpy.distributions.gaussian import Gaussian
 import scipy.stats
+from motpy.distributions.gaussian import Gaussian
 from motpy.estimators.kalman.sigma_points import (merwe_scaled_sigma_points,
                                                   merwe_sigma_weights)
-from motpy.rfs.tomb import TOMBP
 from motpy.estimators.kalman.ukf import UnscentedKalmanFilter
-from motpy.models.transition import ConstantVelocity
 from motpy.models.measurement import LinearMeasurementModel
-from motpy.rfs.poisson import Poisson
+from motpy.models.transition import ConstantVelocity
 from motpy.rfs.bernoulli import MultiBernoulli
-import functools
+from motpy.rfs.poisson import Poisson
+from motpy.rfs.tomb import TOMBP
 
 from rl_sensors.envs.util import merge_poisson
 
@@ -88,6 +88,7 @@ class GraphSearchTrackEnv(gym.Env):
         ]),
         max_velocity=10,
         birth_rate=1/25,
+        clutter_rate=0.0,
         dt=1.0,
     )
     self.sensor = dict(
@@ -114,16 +115,16 @@ class GraphSearchTrackEnv(gym.Env):
     # TODO: Use range-bearing model
     self.measurement_model = LinearMeasurementModel(
         state_dim=4,
-        covar=10*np.eye(2),
+        covar=1*np.eye(2),
         measured_dims=self.pos_inds,
     )
     self.state_estimator = UnscentedKalmanFilter(
         transition_model=self.transition_model,
         measurement_model=self.measurement_model,
         state_subtract_fn=np.subtract,
-        state_mean_fn=None,
+        state_average_fn=np.average,
         measurement_subtract_fn=np.subtract,
-        measurement_mean_fn=None,
+        measurement_average_fn=np.average,
         sigma_params=dict(alpha=1e-3, beta=2, kappa=0),
     )
 
@@ -201,22 +202,24 @@ class GraphSearchTrackEnv(gym.Env):
     )
 
     # Update step
-    # TODO: Nonzero false alarm rate
+    volume = np.prod(np.diff(self.scenario['extents'], axis=-1).ravel())
     self.tracker = self.tracker.update(
         measurements=measurements,
         state_estimator=self.state_estimator,
         pd_model=functools.partial(
             self.pd, sensor=self.sensor, pos_inds=self.pos_inds
         ),
-        lambda_fa=0.0,
-        pg=1.0,
+        lambda_fa=self.scenario['clutter_rate'] / volume,
+        pg=0.999,
     )
     if len(self.tracker.mb) > 0:
-        self.tracker.mb, self.tracker.mb_metadata = self.tracker.mb.prune(
-            valid_fn=lambda mb: mb.r > 1e-4,
-            meta=self.tracker.mb_metadata,
-        )
-    
+      self.tracker.mb, self.tracker.mb_metadata = self.tracker.mb.prune(
+          valid_fn=lambda mb: np.logical_and(
+              mb.r > 1e-4,
+              np.linalg.trace(mb.state.covar) < 1e4  # TODO: Better threshold
+          ),
+          meta=self.tracker.mb_metadata,
+      )
 
     # Env update
     self.update_graph()
@@ -357,6 +360,14 @@ class GraphSearchTrackEnv(gym.Env):
                 ),
             )
         )
+        
+    #################################
+    # Track nodes
+    #################################
+    # TODO: Don't use history right now
+    # if len(self.tracker.mb) > 0:
+    #     track_nodes = self.graph.vs(type_eq='track')
+        
 
     # Remove old agent nodes
     agent_nodes = self.graph.vs(type_eq='agent')
@@ -575,10 +586,9 @@ class GraphSearchTrackEnv(gym.Env):
       weights = merwe_sigma_weights(
           ndim_state=n, alpha=alpha, beta=beta, kappa=kappa)[0]
       weights = abs(weights) / abs(weights).sum()
-      weights = weights[None, :]
     else:
-      x = object_state[:, pos_inds]
-      weights = np.ones((x.shape[0], 1))
+      x = object_state[..., None, pos_inds]
+      weights = np.ones(1)
 
     # Detect objects within beam
     sensor_pos = sensor['position']
@@ -591,7 +601,7 @@ class GraphSearchTrackEnv(gym.Env):
     angle_diff = np.mod((az - steering_angle) + np.pi, 2*np.pi) - np.pi
     in_region = abs(angle_diff) <= beamwidth/2
     pd = np.where(in_region, 0.9, 0)
-    return np.sum(pd * weights, axis=-1)
+    return np.average(pd, weights=weights, axis=-1)
 
   @staticmethod
   def ps(
@@ -601,10 +611,10 @@ class GraphSearchTrackEnv(gym.Env):
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
       x = object_state.mean[:, pos_inds]
-      weights = np.ones((x.shape[0], 1))
+      weights = np.ones(1)
     else:
       x = object_state[:, pos_inds]
-      weights = np.ones((x.shape[0], 1))
+      weights = np.ones(1)
     in_region = np.logical_and.reduce([
         x[:, 0] >= scenario['extents'][0][0],
         x[:, 0] <= scenario['extents'][0][1],
@@ -613,7 +623,7 @@ class GraphSearchTrackEnv(gym.Env):
     ])
     ps = np.where(in_region, 0.999, 0)[:, None]
 
-    return np.sum(ps * weights, axis=-1)
+    return np.average(ps, weights=weights, axis=-1)
 
   def render(self, graph: igraph.Graph = None):
     if graph is None:
@@ -699,6 +709,15 @@ class GraphSearchTrackEnv(gym.Env):
       plt.plot(path[:, 0], path[:, 2], 'r--')
       p = np.array(path[-1])
       plt.plot(p[0], p[2], '*', color='red')
+
+    # Plot current track states
+    if len(self.tracker.mb) > 0:
+      print(len(self.tracker.mb))
+      plt.scatter(
+          self.tracker.mb.state.mean[:, self.pos_inds[0]],
+          self.tracker.mb.state.mean[:, self.pos_inds[1]],
+          c='green', s=10, label='Track States'
+      )
 
     plt.xlim(self.scenario['extents'][0])
     plt.ylim(self.scenario['extents'][1])

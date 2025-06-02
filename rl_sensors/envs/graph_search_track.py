@@ -13,7 +13,11 @@ from motpy.rfs.tomb import TOMBP
 from motpy.estimators.kalman.ukf import UnscentedKalmanFilter
 from motpy.models.transition import ConstantVelocity
 from motpy.models.measurement import LinearMeasurementModel
+from motpy.rfs.poisson import Poisson
+from motpy.rfs.bernoulli import MultiBernoulli
 import functools
+
+from rl_sensors.envs.util import merge_poisson
 
 
 class GraphSearchTrackEnv(gym.Env):
@@ -116,7 +120,7 @@ class GraphSearchTrackEnv(gym.Env):
     self.state_estimator = UnscentedKalmanFilter(
         transition_model=self.transition_model,
         measurement_model=None,
-        state_subtract_fn=None,
+        state_subtract_fn=np.subtract,
         measurement_subtract_fn=None,
         measurement_mean_fn=None,
         sigma_params=dict(alpha=1e-3, beta=2, kappa=0),
@@ -139,7 +143,7 @@ class GraphSearchTrackEnv(gym.Env):
     birth_covars = np.diag(np.array([dx, dvx, dy, dvy])**2)[None, ...].repeat(
         self.n_grid, axis=0
     )
-    birth_state = Gaussian(
+    birth_distribution = Gaussian(
         mean=birth_means,
         covar=birth_covars,
         weight=np.full(self.n_grid, self.scenario['birth_rate'] / self.n_grid)
@@ -155,10 +159,9 @@ class GraphSearchTrackEnv(gym.Env):
     )
 
     self.tracker = TOMBP(
-        birth_state=birth_state,
-        undetected_state=undetected_state,
-        pg=None,
-        poisson_pd_threshold=None,
+        poisson=Poisson(state=undetected_state),
+        mb=None,
+        birth_distribution=birth_distribution
     )
 
     self.graph = igraph.Graph(directed=True)
@@ -181,22 +184,20 @@ class GraphSearchTrackEnv(gym.Env):
     Zk = self.measure()
 
     # Predict step: Surivival and birth
-    search_ps = self.ps(
-        object_state=self.tracker.poisson.state,
-        scenario=self.scenario,
-        pos_inds=self.pos_inds,
+    self.tracker = self.tracker.predict(
+        state_estimator=self.state_estimator,
+        dt=self.scenario['dt'],
+        ps_model=functools.partial(
+            self.ps, scenario=self.scenario, pos_inds=self.pos_inds
+        ),
     )
-    # TODO: Replace with TOMB/P predict
-    # self.tracker.predict(
-    #     state_estimator=self.state_estimator,
-    #     dt=self.scenario['dt'],
-    #     ps_model=functools.partial(
-    #         self.ps, scenario=self.scenario, pos_inds=self.pos_inds
-    #     ),
-    # )
-    self.tracker.poisson.state.weight = \
-        search_ps * self.tracker.poisson.state.weight + \
-        self.tracker.poisson.birth_distribution.weight
+    self.tracker.poisson = merge_poisson(
+        distribution=self.tracker.poisson,
+        source_inds=np.arange(len(self.tracker.poisson)//2),
+        target_inds=np.arange(
+            len(self.tracker.poisson)//2, len(self.tracker.poisson)
+        )
+    )
 
     # Update step
     search_pd = self.pd(
@@ -223,10 +224,10 @@ class GraphSearchTrackEnv(gym.Env):
     #############################
     if self.timestep == 0:
       self.graph.add_vertices(
-          n=self.tracker.poisson.shape[0],
+          n=len(self.tracker.poisson),
           attributes=dict(
               name=[
-                  f'search_{i}' for i in range(self.tracker.poisson.shape[0])
+                  f'search_{i}' for i in range(len(self.tracker.poisson))
               ],
               type='search',
               timestep=self.timestep,
@@ -509,7 +510,7 @@ class GraphSearchTrackEnv(gym.Env):
     # New object birth
     num_birth = self.np_random.poisson(lam=self.scenario['birth_rate'] * dt)
     if num_birth > 0:
-      birth_distribution = self.tracker.poisson.birth_distribution
+      birth_distribution = self.tracker.birth_distribution
       inds = self.np_random.choice(
           a=np.arange(birth_distribution.shape[0]),
           size=num_birth,
@@ -527,15 +528,15 @@ class GraphSearchTrackEnv(gym.Env):
       self.ground_truth.extend([list(state) for state in new_states])
 
   def measure(self) -> List[np.ndarray]:
-
-    # Measure ground truth with the current sensor state
     if len(self.ground_truth) == 0:
       return []
 
+    # Measure
     states = np.array([path[-1] for path in self.ground_truth])
     # TODO: Use spherical measurement model
-    Z = self.measurement_model(states, noise=False)
+    Z = self.measurement_model(states, noise=True)
 
+    # Only keep detected measurements
     pd = self.pd(states, sensor=self.sensor, pos_inds=self.pos_inds)
     detected = self.np_random.uniform(
         size=len(self.ground_truth)

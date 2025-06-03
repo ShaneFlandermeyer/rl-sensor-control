@@ -138,7 +138,7 @@ def train(cfg: dict):
       tx=optax.chain(
           optax.zero_nans(),
           optax.clip_by_global_norm(model_config.max_grad_norm),
-          optax.adam(encoder_config.learning_rate),
+          optax.adamw(encoder_config.learning_rate),
       )
   )
 

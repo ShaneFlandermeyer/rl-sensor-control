@@ -33,6 +33,8 @@ class GraphEncoder(nn.Module):
     node_features = input['node_features']
     node_mask = input['node_mask']
     senders, receivers = edge_list[..., 0], edge_list[..., 1]
+    senders = jnp.where(edge_mask, senders, -1)
+    receivers = jnp.where(edge_mask, receivers, -1)
 
     batch_dims = node_features.shape[:-2]
     num_nodes = node_features.shape[-2]
@@ -45,37 +47,21 @@ class GraphEncoder(nn.Module):
       ], axis=-1
       )
 
-    # Add a dummy node for padding edges
-    num_nodes += 1
-    pad_node = jnp.zeros((*batch_dims, 1, node_features.shape[-1]))
-    pad_mask = jnp.zeros((*batch_dims, 1))
-    node_features = jnp.concatenate([node_features, pad_node], axis=-2)
-    node_mask = jnp.concatenate([node_mask, pad_mask], axis=-1)
-    senders = jnp.where(edge_mask, senders, -1)
-    receivers = jnp.where(edge_mask, receivers, -1)
-
-    graph = dict(
-        node_features=node_features,
-        edge_features=edge_features,
-        senders=senders,
-        receivers=receivers,
-        global_features=jnp.tile(
-            self.param('global', nn.initializers.zeros, (1, self.embed_dim)),
-            [*batch_dims, 1, 1]
-        ),
-    )
-
-    ######################
-    # Graph Processing
     ######################
     # Encode
-    graph['node_features'] = nn.Sequential([
+    ######################
+    node_features = nn.Sequential([
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-        nn.RMSNorm(),
+        nn.LayerNorm(),
         mish,
         nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-    ])(graph['node_features'])
-    graph['global_features'] = AttentionBlock(
+    ])(node_features)
+
+    encode_token = jnp.tile(
+        self.param('encode_token', nn.initializers.zeros, (1, self.embed_dim)),
+        [*batch_dims, 1, 1]
+    )
+    global_embed = AttentionBlock(
         embed_dim=self.embed_dim,
         num_heads=self.num_heads,
         hidden_dim=self.embed_dim,
@@ -83,11 +69,22 @@ class GraphEncoder(nn.Module):
         use_ffn=True,
         kernel_init=self.kernel_init,
     )(
-        query=graph['global_features'], key=graph['node_features'],
-        query_mask=None, key_mask=node_mask
+        query=encode_token,
+        key=node_features,
+        query_mask=None,
+        key_mask=node_mask
     )
-    graph['node_features'] = mish(
-        graph['node_features'] + graph['global_features']
+    node_features = mish(node_features + global_embed)
+
+    ######################
+    # Graph Processing
+    ######################
+    graph = dict(
+        node_features=node_features,
+        edge_features=edge_features,
+        senders=senders,
+        receivers=receivers,
+        global_features=None,
     )
 
     for i in range(self.num_layers):
@@ -102,14 +99,16 @@ class GraphEncoder(nn.Module):
           kernel_init=self.kernel_init,
       )
 
-      # Graph update
-      graph['node_features'] = nn.RMSNorm()(graph['node_features'])
+      # Node update
+      graph['node_features'] = nn.LayerNorm()(graph['node_features'])
       skip = W_skip(graph['node_features'])
       graph = gnn(**graph)
       graph['node_features'] = mish(graph['node_features'] + skip)
 
+    ######################
     # Decode
-    graph['global_features'] = AttentionBlock(
+    ######################
+    x = AttentionBlock(
         embed_dim=self.embed_dim,
         num_heads=self.num_heads,
         hidden_dim=self.embed_dim,
@@ -117,11 +116,13 @@ class GraphEncoder(nn.Module):
         use_ffn=False,
         kernel_init=self.kernel_init,
     )(
-        query=graph['global_features'], key=graph['node_features'],
-        query_mask=None, key_mask=node_mask
+        query=global_embed,
+        key=graph['node_features'],
+        query_mask=None,
+        key_mask=node_mask
     )
-    graph['global_features'] = mish(nn.RMSNorm()(graph['global_features']))
-    x = rearrange(graph['global_features'], '... n d -> ... (n d)')
+    x = mish(nn.LayerNorm()(x))
+    x = rearrange(x, '... n d -> ... (n d)')
 
     return x
 

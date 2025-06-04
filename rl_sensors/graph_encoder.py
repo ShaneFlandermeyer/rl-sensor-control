@@ -11,7 +11,7 @@ from einops import rearrange
 from rl_sensors.layers.attention import PMA, AttentionBlock
 from rl_sensors.layers.gat import GATv2
 from rl_sensors.layers.gin import GIN
-from rl_sensors.envs.graph_search import GraphSearchEnv
+from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 from rl_sensors.layers.activation import mish
 
 
@@ -26,6 +26,7 @@ class GraphEncoder(nn.Module):
     ######################
     # Pre-processing
     ######################
+    current_agent_node_ind = input['current_agent_node_ind'][..., None]
     edge_features = input['edge_features']
     edge_list = input['edge_list']
     edge_mask = input['edge_mask']
@@ -108,6 +109,9 @@ class GraphEncoder(nn.Module):
     ######################
     # Decode
     ######################
+    decode_token = jnp.take_along_axis(
+        graph['node_features'], current_agent_node_ind[..., None], axis=-2
+    )
     x = AttentionBlock(
         embed_dim=self.embed_dim,
         num_heads=self.num_heads,
@@ -116,7 +120,7 @@ class GraphEncoder(nn.Module):
         use_ffn=False,
         kernel_init=self.kernel_init,
     )(
-        query=global_embed,
+        query=decode_token,
         key=graph['node_features'],
         query_mask=None,
         key_mask=node_mask
@@ -128,7 +132,8 @@ class GraphEncoder(nn.Module):
 
 
 if __name__ == '__main__':
-  env = gym.vector.SyncVectorEnv([lambda: GraphSearchEnv() for _ in range(1)])
+  env = gym.vector.SyncVectorEnv(
+      [lambda: GraphSearchTrackEnv() for _ in range(1)])
   obs, _ = env.reset(seed=0)
   for i in range(0):
     obs = env.step(env.action_space.sample())[0]

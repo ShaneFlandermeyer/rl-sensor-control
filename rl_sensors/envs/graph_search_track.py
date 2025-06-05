@@ -56,7 +56,7 @@ class GraphSearchTrackEnv(gym.Env):
         edge_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_edges, 6),
+            shape=(self.max_edges, 5),
             dtype=np.float64,
         ),
         edge_list=gym.spaces.MultiDiscrete(
@@ -73,7 +73,7 @@ class GraphSearchTrackEnv(gym.Env):
         node_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_nodes, 10),
+            shape=(self.max_nodes, 15),
             dtype=np.float64,
         ),
         node_mask=gym.spaces.MultiBinary(self.max_nodes),
@@ -254,19 +254,18 @@ class GraphSearchTrackEnv(gym.Env):
         new = meta.get('new', False)
         updated = meta.get('updated', False)
         missed = track_pd[i] > 0 and not (updated or new)
-        status = (
-            'new' if new else
-            'update' if updated else
+        measurement_type = (
+            'update' if (updated or new) else
             'miss' if missed else
             'predict'
         )
         num_detections = meta.get('num_detections', 0)
-        if status in ['update', 'new']:
+        if measurement_type == 'update':
           num_detections += 1
         initiated = num_detections > self.scenario['num_initiate_detections']
         self.tracker.mb_metadata[i].update(
             pd=track_pd[i],
-            status=status,
+            measurement_type=measurement_type,
             num_detections=num_detections,
             initiated=initiated,
         )
@@ -303,7 +302,8 @@ class GraphSearchTrackEnv(gym.Env):
               # Agent features
               sensor_action=np.array([[0.0]]),
               # Track features
-              track_status="none",
+              measurement_type="none",
+              new=False,
               initiated=False,
           )
       )
@@ -327,7 +327,8 @@ class GraphSearchTrackEnv(gym.Env):
         # Agent features
         sensor_action=self.sensor['action'],
         # Track features
-        track_status="none",
+        measurement_type="none",
+        new=False,
         initiated=False,
     )
     current_agent = self.graph.vs(
@@ -395,7 +396,7 @@ class GraphSearchTrackEnv(gym.Env):
                 for i in detected_search
             ],
             attributes=dict(
-                type='update',
+                type='measurement',
                 pd=search_pd[detected_search],
                 distance=search_edge_dist,
                 angle=np.arctan2(
@@ -410,7 +411,7 @@ class GraphSearchTrackEnv(gym.Env):
                 for i in detected_search
             ],
             attributes=dict(
-                type='update',
+                type='measurement',
                 pd=search_pd[detected_search],
                 distance=search_edge_dist,
                 angle=np.arctan2(
@@ -458,9 +459,9 @@ class GraphSearchTrackEnv(gym.Env):
           # Agent features
           sensor_action=np.zeros((num_new_track_nodes, 1)),
           # Track features
-          track_status=[],
+          measurement_type=[],
+          new=[],
           initiated=[],
-          active=None,  # TODO
       )
       track_edge_attributes = dict(
           type=[],
@@ -469,27 +470,29 @@ class GraphSearchTrackEnv(gym.Env):
           angle=[],
       )
       track_edges = []
-      for i in range(len(self.tracker.mb)):
+      for i, meta in enumerate(self.tracker.mb_metadata):
         if i >= self.max_track_nodes:  # At track capacity
           track_history['delete'] = True
           continue
 
         # Update node attributes
-        track_id = self.tracker.mb_metadata[i]['id']
+        track_id = meta['id']
         track_node_name = f"{track_id}_t{self.timestep}"
-        track_status = self.tracker.mb_metadata[i]['status']
-        track_initated = self.tracker.mb_metadata[i]['initiated']
+        track_measurement_type = meta['measurement_type']
+        track_initated = meta['initiated']
+        track_new = meta['new']
         track_node_attributes.update(
             id=track_node_attributes['id'] + [track_id],
             name=track_node_attributes['name'] + [track_node_name],
-            track_status=track_node_attributes['track_status'] +
-            [track_status],
+            measurement_type=track_node_attributes['measurement_type'] +
+            [track_measurement_type],
+            new=track_node_attributes['new'] + [track_new],
             initiated=track_node_attributes['initiated'] + [track_initated],
         )
 
         # Transition edge
         track_history = self.graph.vs(type_eq='track', id_eq=track_id)
-        last_update = track_history(track_status_in=['update', 'new'])
+        last_update = track_history(measurement_type_eq='update')
         if len(last_update) > 0:
           track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
           last_update_pos = np.array(last_update[-1]['position'])
@@ -519,7 +522,6 @@ class GraphSearchTrackEnv(gym.Env):
         track_pd = self.tracker.mb_metadata[i]['pd']
         agent_pos = np.array(current_agent_node['position'])
         track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
-        edge_type = 'predict' if track_status == 'predict' else 'update'
         distance = np.linalg.norm(track_pos - agent_pos)
         angles = [
             np.arctan2(
@@ -537,18 +539,18 @@ class GraphSearchTrackEnv(gym.Env):
             (track_node_name, current_agent_node)
         ])
         track_edge_attributes.update(
-            type=track_edge_attributes['type'] + 2*[edge_type],
+            type=track_edge_attributes['type'] + 2*['measurement'],
             pd=track_edge_attributes['pd'] + 2*[track_pd],
             distance=track_edge_attributes['distance'] + 2*[distance],
             angle=track_edge_attributes['angle'] + 2*angles,
         )
 
         # Track graph pruning
-        old_predicts = track_history(track_status_eq='predict')
+        old_predicts = track_history(measurement_type_eq='predict')
         if len(old_predicts) > 0:
           old_predicts['delete'] = True
-        if track_status == 'update':
-          old_misses = track_history(track_status_eq='miss')
+        if track_measurement_type == 'update':
+          old_misses = track_history(measurement_type_eq='miss')
           if len(old_misses) > 0:
             old_misses['delete'] = True
         if len(track_history) >= self.max_track_history:
@@ -585,11 +587,11 @@ class GraphSearchTrackEnv(gym.Env):
         agent=[0, 1, 0],
         track=[0, 0, 1],
     )
-    track_status_map = dict(
-        new=[1, 0, 0, 0],
-        update=[0, 1, 0, 0],
-        miss=[0, 0, 1, 0],
-        predict=[0, 0, 0, 1],
+    measurement_type_map = dict(
+        update=[1, 0, 0],
+        miss=[0, 1, 0],
+        predict=[0, 0, 1],
+        none=[0, 0, 0],
     )
 
     nodes = self.graph.vs
@@ -598,23 +600,35 @@ class GraphSearchTrackEnv(gym.Env):
         'age',
         'position',
         'velocity',
+        # TODO: Covar diags
         # Search features
         'weight',
         # Agent features
         'sensor_action',
         # Track features
+        'measurement_type',
+        'new',
+        'initiated',
     ]
     node_dict = {
         k: np.array(nodes[k]).reshape((len(nodes), -1)) for k in node_keys
     }
     # Pre-process features
     node_dict.update(
-        type=np.array(
-            list(map(lambda x: node_label_map[x], node_dict['type'][:, 0]))
-        ),
+        type=np.array(list(
+            map(lambda x: node_label_map[x], node_dict['type'][:, 0])
+        )),
         age=np.log1p(node_dict['age']),
         position=node_dict['position'] / position_scale[None, :],
+        # Search features
         weight=node_dict['weight'] / (node_dict['weight'].max() + 1e-10),
+        # Track features
+        measurement_type=np.array(
+            list(map(
+                lambda x: measurement_type_map[x],
+                node_dict['measurement_type'][:, 0]
+            ))
+        ),
     )
 
     node_features = np.concatenate(
@@ -641,10 +655,9 @@ class GraphSearchTrackEnv(gym.Env):
     # Edges
     ###########################
     edge_label_map = dict(
-        transition=[1, 0, 0],
-        predict=[0, 1, 0],
-        update=[0, 0, 1],
-        none=[0, 0, 0],
+        transition=[1, 0],
+        measurement=[0, 1],
+        none=[0, 0],
     )
     edges = self.graph.es
     if len(edges) > 0:
@@ -934,12 +947,12 @@ class GraphSearchTrackEnv(gym.Env):
       plt.plot(edge_x, edge_y, color='black', linewidth=0.5)
 
     # Ground truth
-    # for path in self.ground_truth:
-    #   # Plot the entire path as a dotted red line
-    #   path = np.array(path)
-    #   plt.plot(path[:, 0], path[:, 2], 'r--')
-    #   p = np.array(path[-1])
-    #   plt.plot(p[0], p[2], '*', color='red')
+    for path in self.ground_truth:
+      # Plot the entire path as a dotted red line
+      path = np.array(path)
+      plt.plot(path[:, 0], path[:, 2], 'r--')
+      p = np.array(path[-1])
+      plt.plot(p[0], p[2], '*', color='red')
 
     plt.xlim(self.scenario['extents'][0])
     plt.ylim(self.scenario['extents'][1])

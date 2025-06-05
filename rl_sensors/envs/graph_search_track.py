@@ -463,6 +463,19 @@ class GraphSearchTrackEnv(gym.Env):
         track_history = self.graph.vs(type_eq='track', id_eq=track_id)
         last_update = track_history(track_status_in=['update', 'new'])
         if len(last_update) > 0:
+          track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
+          last_update_pos = np.array(last_update[-1]['position'])
+          distance = np.linalg.norm(track_pos - last_update_pos)
+          angles = [
+              np.arctan2(
+                  last_update_pos[1] - track_pos[1],
+                  last_update_pos[0] - track_pos[0]
+              ),
+              np.arctan2(
+                  track_pos[1] - last_update_pos[1],
+                  track_pos[0] - last_update_pos[0]
+              )
+          ]
           track_edges.extend([
               (last_update[-1], track_node_name),
               (track_node_name, last_update[-1])
@@ -470,13 +483,26 @@ class GraphSearchTrackEnv(gym.Env):
           track_edge_attributes.update(
               type=track_edge_attributes['type'] + 2*['transition'],
               pd=track_edge_attributes['pd'] + 2*[0.0],
-              # TODO: Placeholder features
-              distance=track_edge_attributes['distance'] + 2*[0.0],
-              angle=track_edge_attributes['angle'] + 2*[0.0],
+              distance=track_edge_attributes['distance'] + 2*[distance],
+              angle=track_edge_attributes['angle'] + angles,
           )
 
         # Measurement update/miss/predict edge
         track_pd = self.tracker.mb_metadata[i]['pd']
+        agent_pos = np.array(current_agent_node['position'])
+        track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
+        distance = np.linalg.norm(track_pos - agent_pos)
+        angles = [
+            np.arctan2(
+                agent_pos[1] - track_pos[1],
+                agent_pos[0] - track_pos[0]
+            ),
+            np.arctan2(
+                track_pos[1] - agent_pos[1],
+                track_pos[0] - agent_pos[0]
+            )
+        ]
+
         track_edges.extend([
             (current_agent_node, track_node_name),
             (track_node_name, current_agent_node)
@@ -484,9 +510,8 @@ class GraphSearchTrackEnv(gym.Env):
         track_edge_attributes.update(
             type=track_edge_attributes['type'] + 2*['update'],
             pd=track_edge_attributes['pd'] + 2*[track_pd],
-            # TODO: Placeholder features
-            distance=track_edge_attributes['distance'] + 2*[0.0],
-            angle=track_edge_attributes['angle'] + 2*[0.0],
+            distance=track_edge_attributes['distance'] + 2*[distance],
+            angle=track_edge_attributes['angle'] + 2*angles,
         )
 
         # Track graph pruning

@@ -108,7 +108,7 @@ class GraphSearchTrackEnv(gym.Env):
     self.sensor = dict(
         position=np.zeros(2),
         velocity=np.zeros(2),
-        beamwidth=10*np.pi/180,
+        beamwidth=16*np.pi/180,
         steering_angle=0,
         action=np.zeros(1),
     )
@@ -431,7 +431,7 @@ class GraphSearchTrackEnv(gym.Env):
     #################################
     # Track nodes
     #################################
-    if len(self.tracker.mb) > 0 and self.max_track_nodes > 0:
+    if len(self.tracker.mb) > 0 and self.max_active_tracks > 0:
       # Delete stale track nodes
       track_ids = [meta['id'] for meta in self.tracker.mb_metadata]
       stale_track_nodes = self.graph.vs(type_eq='track', id_notin=track_ids)
@@ -442,7 +442,7 @@ class GraphSearchTrackEnv(gym.Env):
       current_agent_node = self.graph.vs.find(
           type_eq='agent', timestep_eq=self.timestep
       )
-      num_new_track_nodes = min(len(self.tracker.mb), self.max_track_nodes)
+      num_new_track_nodes = min(len(self.tracker.mb), self.max_active_tracks)
       track_node_attributes = dict(
           type='track',
           name=[],
@@ -471,7 +471,7 @@ class GraphSearchTrackEnv(gym.Env):
       )
       track_edges = []
       for i, meta in enumerate(self.tracker.mb_metadata):
-        if i >= self.max_track_nodes:  # At track capacity
+        if i >= self.max_active_tracks:  # At track capacity
           track_history['delete'] = True
           continue
 
@@ -570,7 +570,6 @@ class GraphSearchTrackEnv(gym.Env):
     ###############################
     self.graph.delete_vertices(self.graph.vs(delete_eq=True))
     self.graph.vs['age'] = self.timestep - np.array(self.graph.vs['timestep'])
-    pass
 
   def get_obs(self) -> Dict[str, Any]:
     ###########################
@@ -735,7 +734,14 @@ class GraphSearchTrackEnv(gym.Env):
     return obs
 
   def get_reward(self) -> float:
+    # Search reward
     w = self.tracker.poisson.state.weight
+    
+    # Track reward
+    if len(self.tracker.mb) > 0:
+        # TODO
+        pass
+    
     reward = -w.sum()
     return reward
 

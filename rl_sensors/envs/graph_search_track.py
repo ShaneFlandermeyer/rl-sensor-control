@@ -56,7 +56,7 @@ class GraphSearchTrackEnv(gym.Env):
         edge_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_edges, 5),
+            shape=(self.max_edges, 6),
             dtype=np.float64,
         ),
         edge_list=gym.spaces.MultiDiscrete(
@@ -73,7 +73,7 @@ class GraphSearchTrackEnv(gym.Env):
         node_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_nodes, 8),
+            shape=(self.max_nodes, 10),
             dtype=np.float64,
         ),
         node_mask=gym.spaces.MultiBinary(self.max_nodes),
@@ -102,10 +102,11 @@ class GraphSearchTrackEnv(gym.Env):
         birth_rate=1/25,
         clutter_rate=0.0,
         dt=1.0,
-        max_trace=50**2 + 50**2
+        max_trace=50**2 + 50**2,
     )
     self.sensor = dict(
         position=np.zeros(2),
+        velocity=np.zeros(2),
         beamwidth=10*np.pi/180,
         steering_angle=0,
         action=np.zeros(1),
@@ -125,7 +126,6 @@ class GraphSearchTrackEnv(gym.Env):
         velocity_inds=self.vel_inds,
         noise_type='continuous',
     )
-    # TODO: Use range-bearing model
     self.measurement_model = LinearMeasurementModel(
         state_dim=4,
         covar=1*np.eye(2),
@@ -290,8 +290,11 @@ class GraphSearchTrackEnv(gym.Env):
               id=search_ids,
               timestep=self.timestep,
               position=self.tracker.poisson.state.mean[:, self.pos_inds],
+              velocity=self.tracker.poisson.state.mean[:, self.vel_inds],
               covar=self.tracker.poisson.state.covar,
+              # Search features
               weight=self.tracker.poisson.state.weight,
+              # Agent features
               sensor_action=np.array([[0.0]]),
               # Track features
               track_status="none",
@@ -311,7 +314,10 @@ class GraphSearchTrackEnv(gym.Env):
         id='agent',
         timestep=self.timestep,
         position=self.sensor['position'],
+        velocity=self.sensor['velocity'],
+        # Search features
         weight=0.0,
+        # Agent features
         sensor_action=self.sensor['action'],
         # Track features
         track_status="none",
@@ -424,10 +430,10 @@ class GraphSearchTrackEnv(gym.Env):
         self.graph.delete_vertices(stale_track_nodes)
 
       # Collect track info for this timestep
-      num_new_track_nodes = min(len(self.tracker.mb), self.max_track_nodes)
       current_agent_node = self.graph.vs.find(
           type_eq='agent', timestep_eq=self.timestep
       )
+      num_new_track_nodes = min(len(self.tracker.mb), self.max_track_nodes)
       track_node_attributes = dict(
           type='track',
           name=[],
@@ -439,6 +445,11 @@ class GraphSearchTrackEnv(gym.Env):
           velocity=self.tracker.mb.state.mean[
               :self.max_active_tracks, self.vel_inds
           ],
+          # Search features
+          weight=np.zeros(num_new_track_nodes),
+          # Agent features
+          sensor_action=np.zeros((num_new_track_nodes, 1)),
+          # Track features
           track_status=[],
           active=None,  # TODO
           initiated=None,  # TODO
@@ -451,17 +462,17 @@ class GraphSearchTrackEnv(gym.Env):
       )
       track_edges = []
       for i in range(len(self.tracker.mb)):
-        if i >= self.max_track_nodes:
+        if i >= self.max_track_nodes:  # At track capacity
           track_history['delete'] = True
           continue
 
         # Update node attributes
         track_id = self.tracker.mb_metadata[i]['id']
-        track_status = self.tracker.mb_metadata[i]['status']
         track_node_name = f"{track_id}_t{self.timestep}"
+        track_status = self.tracker.mb_metadata[i]['status']
         track_node_attributes.update(
-            name=track_node_attributes['name'] + [track_node_name],
             id=track_node_attributes['id'] + [track_id],
+            name=track_node_attributes['name'] + [track_node_name],
             track_status=track_node_attributes['track_status'] +
             [track_status],
         )
@@ -498,6 +509,7 @@ class GraphSearchTrackEnv(gym.Env):
         track_pd = self.tracker.mb_metadata[i]['pd']
         agent_pos = np.array(current_agent_node['position'])
         track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
+        edge_type = 'predict' if track_status == 'predict' else 'update'
         distance = np.linalg.norm(track_pos - agent_pos)
         angles = [
             np.arctan2(
@@ -515,7 +527,7 @@ class GraphSearchTrackEnv(gym.Env):
             (track_node_name, current_agent_node)
         ])
         track_edge_attributes.update(
-            type=track_edge_attributes['type'] + 2*['update'],
+            type=track_edge_attributes['type'] + 2*[edge_type],
             pd=track_edge_attributes['pd'] + 2*[track_pd],
             distance=track_edge_attributes['distance'] + 2*[distance],
             angle=track_edge_attributes['angle'] + 2*angles,
@@ -533,12 +545,6 @@ class GraphSearchTrackEnv(gym.Env):
           num_to_delete = len(track_history) - (self.max_track_history - 1)
           track_history[:num_to_delete]['delete'] = True
 
-      # Add placeholder attributes to track nodes
-      track_node_attributes.update(
-          covar=None,
-          weight=np.zeros(num_new_track_nodes),
-          sensor_action=np.zeros((num_new_track_nodes, 1)),
-      )
       # Add track nodes and edges
       self.graph.add_vertices(
           n=num_new_track_nodes,
@@ -580,8 +586,12 @@ class GraphSearchTrackEnv(gym.Env):
         'type',
         'age',
         'position',
+        'velocity',
+        # Search features
         'weight',
+        # Agent features
         'sensor_action',
+        # Track features
     ]
     node_dict = {
         k: np.array(nodes[k]).reshape((len(nodes), -1)) for k in node_keys
@@ -620,9 +630,10 @@ class GraphSearchTrackEnv(gym.Env):
     # Edges
     ###########################
     edge_label_map = dict(
-        transition=[1, 0],
-        update=[0, 1],
-        none=[0, 0],
+        transition=[1, 0, 0],
+        predict=[0, 1, 0],
+        update=[0, 0, 1],
+        none=[0, 0, 0],
     )
     edges = self.graph.es
     if len(edges) > 0:
@@ -754,7 +765,6 @@ class GraphSearchTrackEnv(gym.Env):
 
     # Measure
     states = np.array([path[-1] for path in self.ground_truth])
-    # TODO: Use spherical measurement model
     Z = self.measurement_model(states, noise=True)
 
     # Only keep detected measurements

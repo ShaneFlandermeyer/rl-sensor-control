@@ -103,6 +103,7 @@ class GraphSearchTrackEnv(gym.Env):
         clutter_rate=0.0,
         dt=1.0,
         max_trace=50**2 + 50**2,
+        num_initiate_detections=3,
     )
     self.sensor = dict(
         position=np.zeros(2),
@@ -199,7 +200,7 @@ class GraphSearchTrackEnv(gym.Env):
     self.update_ground_truth(dt=self.scenario['dt'])
     measurements = self.measure()
 
-    # Predict step: Surivival and birth
+    # Predict step
     self.tracker = self.tracker.predict(
         state_estimator=self.state_estimator,
         dt=self.scenario['dt'],
@@ -248,8 +249,7 @@ class GraphSearchTrackEnv(gym.Env):
       )
       for i, meta in enumerate(self.tracker.mb_metadata):
         if meta['new']:
-          self.tracker.mb_metadata[i]['id'] = \
-              f'track_{self.global_track_counter}'
+          meta['id'] = f'track_{self.global_track_counter}'
           self.global_track_counter += 1
         new = meta.get('new', False)
         updated = meta.get('updated', False)
@@ -260,9 +260,15 @@ class GraphSearchTrackEnv(gym.Env):
             'miss' if missed else
             'predict'
         )
+        num_detections = meta.get('num_detections', 0)
+        if status in ['update', 'new']:
+          num_detections += 1
+        initiated = num_detections > self.scenario['num_initiate_detections']
         self.tracker.mb_metadata[i].update(
             pd=track_pd[i],
             status=status,
+            num_detections=num_detections,
+            initiated=initiated,
         )
 
     # Env update
@@ -298,6 +304,7 @@ class GraphSearchTrackEnv(gym.Env):
               sensor_action=np.array([[0.0]]),
               # Track features
               track_status="none",
+              initiated=False,
           )
       )
     else:
@@ -321,6 +328,7 @@ class GraphSearchTrackEnv(gym.Env):
         sensor_action=self.sensor['action'],
         # Track features
         track_status="none",
+        initiated=False,
     )
     current_agent = self.graph.vs(
         type_eq='agent', timestep_eq=self.timestep
@@ -451,8 +459,8 @@ class GraphSearchTrackEnv(gym.Env):
           sensor_action=np.zeros((num_new_track_nodes, 1)),
           # Track features
           track_status=[],
+          initiated=[],
           active=None,  # TODO
-          initiated=None,  # TODO
       )
       track_edge_attributes = dict(
           type=[],
@@ -470,11 +478,13 @@ class GraphSearchTrackEnv(gym.Env):
         track_id = self.tracker.mb_metadata[i]['id']
         track_node_name = f"{track_id}_t{self.timestep}"
         track_status = self.tracker.mb_metadata[i]['status']
+        track_initated = self.tracker.mb_metadata[i]['initiated']
         track_node_attributes.update(
             id=track_node_attributes['id'] + [track_id],
             name=track_node_attributes['name'] + [track_node_name],
             track_status=track_node_attributes['track_status'] +
             [track_status],
+            initiated=track_node_attributes['initiated'] + [track_initated],
         )
 
         # Transition edge
@@ -541,9 +551,8 @@ class GraphSearchTrackEnv(gym.Env):
           old_misses = track_history(track_status_eq='miss')
           if len(old_misses) > 0:
             old_misses['delete'] = True
-        if len(track_history) >= self.max_track_history-1:
-          num_to_delete = len(track_history) - (self.max_track_history - 1)
-          track_history[:num_to_delete]['delete'] = True
+        if len(track_history) >= self.max_track_history:
+          track_history[:-self.max_track_history]['delete'] = True
 
       # Add track nodes and edges
       self.graph.add_vertices(
@@ -551,6 +560,8 @@ class GraphSearchTrackEnv(gym.Env):
           attributes=track_node_attributes,
       )
       self.graph.add_edges(es=track_edges, attributes=track_edge_attributes)
+    else:
+      self.graph.vs(type_eq='track')['delete'] = True
 
     ###############################
     # Global graph update
@@ -904,7 +915,10 @@ class GraphSearchTrackEnv(gym.Env):
     track_nodes = graph.vs(type_eq='track')
     if len(track_nodes) > 0:
       track_pos = np.array(track_nodes['position'])
-      plt.scatter(track_pos[:, 0], track_pos[:, 1], c='g', s=100)
+      color = np.where(
+          track_nodes['initiated'], 'green', 'orange'
+      )
+      plt.scatter(track_pos[:, 0], track_pos[:, 1], c=color, s=50)
 
     # Edges
     if len(graph.es) > 0:
@@ -920,12 +934,12 @@ class GraphSearchTrackEnv(gym.Env):
       plt.plot(edge_x, edge_y, color='black', linewidth=0.5)
 
     # Ground truth
-    for path in self.ground_truth:
-      # Plot the entire path as a dotted red line
-      path = np.array(path)
-      plt.plot(path[:, 0], path[:, 2], 'r--')
-      p = np.array(path[-1])
-      plt.plot(p[0], p[2], '*', color='red')
+    # for path in self.ground_truth:
+    #   # Plot the entire path as a dotted red line
+    #   path = np.array(path)
+    #   plt.plot(path[:, 0], path[:, 2], 'r--')
+    #   p = np.array(path[-1])
+    #   plt.plot(p[0], p[2], '*', color='red')
 
     plt.xlim(self.scenario['extents'][0])
     plt.ylim(self.scenario['extents'][1])

@@ -102,6 +102,7 @@ class GraphSearchTrackEnv(gym.Env):
         birth_rate=1/25,
         clutter_rate=0.0,
         dt=1.0,
+        max_trace=50**2 + 50**2
     )
     self.sensor = dict(
         position=np.zeros(2),
@@ -229,7 +230,13 @@ class GraphSearchTrackEnv(gym.Env):
       self.tracker.mb, self.tracker.mb_metadata = self.tracker.mb.prune(
           valid_fn=lambda mb: np.logical_and(
               mb.r > 1e-4,
-              np.linalg.trace(mb.state.covar) < 1e4  # TODO: Better threshold
+              np.linalg.trace(
+                  mb.state.covar[
+                      np.ix_(
+                          np.arange(len(mb)), self.pos_inds, self.pos_inds
+                      )
+                  ]
+              ) < self.scenario['max_trace']
           ),
           meta=self.tracker.mb_metadata,
       )

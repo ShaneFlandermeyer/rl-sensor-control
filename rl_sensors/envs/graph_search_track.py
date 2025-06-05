@@ -35,8 +35,8 @@ class GraphSearchTrackEnv(gym.Env):
     self.top_k_search_update = 4
 
     # Track config
-    self.max_track_history = 0
-    self.max_active_tracks = 0
+    self.max_track_history = 3
+    self.max_active_tracks = 5
     self.max_track_nodes = self.max_active_tracks * self.max_track_history
 
     self.max_nodes = self.max_search_nodes + \
@@ -233,6 +233,30 @@ class GraphSearchTrackEnv(gym.Env):
           ),
           meta=self.tracker.mb_metadata,
       )
+      # Update track metadata
+      track_pd = self.pd(
+          object_state=self.tracker.mb.state,
+          sensor=self.sensor,
+          pos_inds=self.pos_inds,
+      )
+      for i, meta in enumerate(self.tracker.mb_metadata):
+        if meta['new']:
+          self.tracker.mb_metadata[i]['id'] = \
+              f'track_{self.global_track_counter}'
+          self.global_track_counter += 1
+        new = meta.get('new', False)
+        updated = meta.get('updated', False)
+        missed = track_pd[i] > 0 and not (updated or new)
+        status = (
+            'new' if new else
+            'update' if updated else
+            'miss' if missed else
+            'predict'
+        )
+        self.tracker.mb_metadata[i].update(
+            pd=track_pd[i],
+            status=status,
+        )
 
     # Env update
     self.update_graph()
@@ -248,18 +272,22 @@ class GraphSearchTrackEnv(gym.Env):
     # Search nodes
     #############################
     if self.timestep == 0:
+      search_ids = [
+          f'search_{i}' for i in range(len(self.tracker.poisson))
+      ]
       self.graph.add_vertices(
           n=len(self.tracker.poisson),
           attributes=dict(
-              name=[
-                  f'search_{i}' for i in range(len(self.tracker.poisson))
-              ],
               type='search',
+              name=search_ids,
+              id=search_ids,
               timestep=self.timestep,
               position=self.tracker.poisson.state.mean[:, self.pos_inds],
               covar=self.tracker.poisson.state.covar,
               weight=self.tracker.poisson.state.weight,
               sensor_action=np.array([[0.0]]),
+              # Track features
+              track_status="none",
           )
       )
     else:
@@ -271,12 +299,15 @@ class GraphSearchTrackEnv(gym.Env):
     # Agent nodes
     ##############################
     self.graph.add_vertex(
-        name=f'agent_t{self.timestep}',
         type='agent',
+        name=f'agent_t{self.timestep}',
+        id='agent',
         timestep=self.timestep,
         position=self.sensor['position'],
         weight=0.0,
         sensor_action=self.sensor['action'],
+        # Track features
+        track_status="none",
     )
     current_agent = self.graph.vs(
         type_eq='agent', timestep_eq=self.timestep
@@ -370,130 +401,125 @@ class GraphSearchTrackEnv(gym.Env):
     # Remove old agent nodes
     agent_nodes = self.graph.vs(type_eq='agent')
     if len(agent_nodes) > self.max_agent_nodes:
-      self.graph.delete_vertices(agent_nodes[:-self.max_agent_nodes])
+      num_to_delete = len(agent_nodes) - self.max_agent_nodes
+      agent_nodes[:num_to_delete]['delete'] = True
+    else:
+      agent_nodes['delete'] = False
 
     #################################
     # Track nodes
     #################################
     if len(self.tracker.mb) > 0 and self.max_track_nodes > 0:
-      # Update track metadata
-      track_pd = self.pd(
-          object_state=self.tracker.mb.state,
-          sensor=self.sensor,
-          pos_inds=self.pos_inds,
+      # Delete stale track nodes
+      track_ids = [meta['id'] for meta in self.tracker.mb_metadata]
+      stale_track_nodes = self.graph.vs(type_eq='track', id_notin=track_ids)
+      if len(stale_track_nodes) > 0:
+        self.graph.delete_vertices(stale_track_nodes)
+
+      # Collect track info for this timestep
+      num_new_track_nodes = min(len(self.tracker.mb), self.max_track_nodes)
+      current_agent_node = self.graph.vs.find(
+          type_eq='agent', timestep_eq=self.timestep
       )
-      for i, meta in enumerate(self.tracker.mb_metadata):
-        if meta['new']:
-          self.tracker.mb_metadata[i]['id'] = \
-              f'track_{self.global_track_counter + self.global_track_counter}'
-          self.global_track_counter += 1
-        updated = meta.get('updated', False)
-        new = meta.get('new', False)
-        missed = track_pd[i] > 0 and not (updated or new)
-        self.tracker.mb_metadata[i].update(
-            pd=track_pd[i],
-            new=new,
-            updated=updated,
-            missed=missed,
+      track_node_attributes = dict(
+          type='track',
+          name=[],
+          id=[],
+          timestep=self.timestep,
+          position=self.tracker.mb.state.mean[
+              :self.max_active_tracks, self.pos_inds
+          ],
+          velocity=self.tracker.mb.state.mean[
+              :self.max_active_tracks, self.vel_inds
+          ],
+          track_status=[],
+          active=None,  # TODO
+          initiated=None,  # TODO
+      )
+      track_edge_attributes = dict(
+          type=[],
+          pd=[],
+          distance=[],
+          angle=[],
+      )
+      track_edges = []
+      for i in range(len(self.tracker.mb)):
+        if i >= self.max_track_nodes:
+          track_history['delete'] = True
+          continue
+
+        # Update node attributes
+        track_id = self.tracker.mb_metadata[i]['id']
+        track_status = self.tracker.mb_metadata[i]['status']
+        track_node_name = f"{track_id}_t{self.timestep}"
+        track_node_attributes.update(
+            name=track_node_attributes['name'] + [track_node_name],
+            id=track_node_attributes['id'] + [track_id],
+            track_status=track_node_attributes['track_status'] +
+            [track_status],
         )
 
-      # Add new nodes
-      # TODO: Remove old predict (and maybe miss nodes)
+        # Transition edge
+        track_history = self.graph.vs(type_eq='track', id_eq=track_id)
+        last_update = track_history(track_status_in=['update', 'new'])
+        if len(last_update) > 0:
+          track_edges.extend([
+              (last_update[-1], track_node_name),
+              (track_node_name, last_update[-1])
+          ])
+          track_edge_attributes.update(
+              type=track_edge_attributes['type'] + 2*['transition'],
+              pd=track_edge_attributes['pd'] + 2*[0.0],
+              # TODO: Placeholder features
+              distance=track_edge_attributes['distance'] + 2*[0.0],
+              angle=track_edge_attributes['angle'] + 2*[0.0],
+          )
+
+        # Measurement update/miss/predict edge
+        track_pd = self.tracker.mb_metadata[i]['pd']
+        track_edges.extend([
+            (current_agent_node, track_node_name),
+            (track_node_name, current_agent_node)
+        ])
+        track_edge_attributes.update(
+            type=track_edge_attributes['type'] + 2*['update'],
+            pd=track_edge_attributes['pd'] + 2*[track_pd],
+            # TODO: Placeholder features
+            distance=track_edge_attributes['distance'] + 2*[0.0],
+            angle=track_edge_attributes['angle'] + 2*[0.0],
+        )
+
+        # Track graph pruning
+        old_predicts = track_history(track_status_eq='predict')
+        if len(old_predicts) > 0:
+          old_predicts['delete'] = True
+        if track_status == 'update':
+          old_misses = track_history(track_status_eq='miss')
+          if len(old_misses) > 0:
+            old_misses['delete'] = True
+        if len(track_history) >= self.max_track_history-1:
+          num_to_delete = len(track_history) - (self.max_track_history - 1)
+          track_history[:num_to_delete]['delete'] = True
+
+      # Add placeholder attributes to track nodes
+      track_node_attributes.update(
+          covar=None,
+          weight=np.zeros(num_new_track_nodes),
+          sensor_action=np.zeros((num_new_track_nodes, 1)),
+      )
+      # Add track nodes and edges
       self.graph.add_vertices(
-          n=len(self.tracker.mb),
-          attributes=dict(
-              type='track',
-              name=[
-                  f'{meta["id"]}_t{self.timestep}'
-                  for meta in self.tracker.mb_metadata
-              ],
-              id=[meta['id'] for meta in self.tracker.mb_metadata],
-              timestep=self.timestep,
-              position=self.tracker.mb.state.mean[:, self.pos_inds],
-              velocity=self.tracker.mb.state.mean[:, self.vel_inds],
-              covar=None,
-              weight=np.zeros(len(self.tracker.mb)),
-              sensor_action=np.zeros((len(self.tracker.mb), 1)),
-              # TODO: Track status features
-              active=None,  # TODO
-              new=None,  # TODO
-              initiated=None,  # TODO
-              # TODO: [predict, update, miss]
-              track_status=None,
-          )
+          n=num_new_track_nodes,
+          attributes=track_node_attributes,
       )
-
-      # Track edges
-      # Measurement update
-      # TODO: Only for measurement update or miss
-      current_agent = self.graph.vs(
-          type_eq='agent', timestep_eq=self.timestep
-      )[0]
-      current_tracks = self.graph.vs(
-          type_eq='track', timestep_eq=self.timestep
-      )
-      self.graph.add_edges(
-          es=[
-              (current_agent, track) for track in current_tracks
-          ],
-          attributes=dict(
-              type='update',
-              pd=np.zeros(len(current_tracks)),  # TODO
-              distance=np.zeros(len(current_tracks)),  # TODO
-              angle=np.zeros(len(current_tracks)),  # TODO
-          ),
-      )
-      self.graph.add_edges(
-          es=[
-              (track, current_agent) for track in current_tracks
-          ],
-          attributes=dict(
-              type='update',
-              pd=np.zeros(len(current_tracks)),  # TODO
-              distance=np.zeros(len(current_tracks)),  # TODO
-              angle=np.zeros(len(current_tracks)),  # TODO
-          ),
-      )
-
-      # Track transition
-      # For each track, add an edge to its previous update
-      tracks = [
-          self.graph.vs(type_eq='track', id_eq=meta['id'])
-          for meta in self.tracker.mb_metadata
-      ]
-      self.graph.add_edges(
-          es=[
-              (track[-1], track[-2]) for track in tracks if len(track) > 1
-          ],
-          attributes=dict(
-              type='transition',
-              pd=np.zeros(1),  # TODO
-              distance=np.zeros(1),  # TODO
-              angle=np.zeros(1),  # TODO
-          )
-      )
-      self.graph.add_edges(
-          es=[
-              (track[-2], track[-1]) for track in tracks if len(track) > 1
-          ],
-          attributes=dict(
-              type='transition',
-              pd=np.zeros(1),  # TODO
-              distance=np.zeros(1),  # TODO
-              angle=np.zeros(1),  # TODO
-          )
-      )
-
-      # Track graph pruning
-      for track in tracks:
-        if len(track) > self.max_track_history:
-          self.graph.delete_vertices(track[:-self.max_track_history])
-      pass
+      self.graph.add_edges(es=track_edges, attributes=track_edge_attributes)
 
     ###############################
-    # Shared features
+    # Global graph update
     ###############################
+    self.graph.delete_vertices(self.graph.vs(delete_eq=True))
     self.graph.vs['age'] = self.timestep - np.array(self.graph.vs['timestep'])
+    pass
 
   def get_obs(self) -> Dict[str, Any]:
     ###########################
@@ -510,6 +536,13 @@ class GraphSearchTrackEnv(gym.Env):
         agent=[0, 1, 0],
         track=[0, 0, 1],
     )
+    track_status_map = dict(
+        new=[1, 0, 0, 0],
+        update=[0, 1, 0, 0],
+        miss=[0, 0, 1, 0],
+        predict=[0, 0, 0, 1],
+    )
+
     nodes = self.graph.vs
     node_keys = [
         'type',
@@ -557,6 +590,7 @@ class GraphSearchTrackEnv(gym.Env):
     edge_label_map = dict(
         transition=[1, 0],
         update=[0, 1],
+        none=[0, 0],
     )
     edges = self.graph.es
     if len(edges) > 0:
@@ -828,7 +862,7 @@ class GraphSearchTrackEnv(gym.Env):
     track_nodes = graph.vs(type_eq='track')
     if len(track_nodes) > 0:
       track_pos = np.array(track_nodes['position'])
-      plt.scatter(track_pos[:, 0], track_pos[:, 1], c='g')
+      plt.scatter(track_pos[:, 0], track_pos[:, 1], c='g', s=100)
 
     # Edges
     if len(graph.es) > 0:
@@ -850,15 +884,6 @@ class GraphSearchTrackEnv(gym.Env):
       plt.plot(path[:, 0], path[:, 2], 'r--')
       p = np.array(path[-1])
       plt.plot(p[0], p[2], '*', color='red')
-
-    # Plot current track states
-    if len(self.tracker.mb) > 0:
-      print(len(self.tracker.mb))
-      plt.scatter(
-          self.tracker.mb.state.mean[:, self.pos_inds[0]],
-          self.tracker.mb.state.mean[:, self.pos_inds[1]],
-          c='green', s=100, label='Track States'
-      )
 
     plt.xlim(self.scenario['extents'][0])
     plt.ylim(self.scenario['extents'][1])

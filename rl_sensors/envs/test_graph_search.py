@@ -8,11 +8,11 @@ def greedy_search(obs):
   # angles = obs['node_features'][..., -2]
   pos = obs['node_features'][..., 4:6]
   angles = np.arctan2(pos[..., 1], pos[..., 0])
-  weights = obs['node_features'][..., 6]
+  weights = obs['node_features'][..., 8]
 
   # Select the angle with the highest weight
   max_index = np.argmax(weights)
-  action = np.array([angles[max_index]])/np.pi + np.random.normal(0.02, 0.02)
+  action = np.array([angles[max_index]])/np.pi + np.random.normal(0.00, 0.00)
   return action
 
 

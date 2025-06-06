@@ -73,7 +73,7 @@ class GraphSearchTrackEnv(gym.Env):
         node_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_nodes, 15),
+            shape=(self.max_nodes, 19),
             dtype=np.float64,
         ),
         node_mask=gym.spaces.MultiBinary(self.max_nodes),
@@ -296,7 +296,9 @@ class GraphSearchTrackEnv(gym.Env):
               timestep=self.timestep,
               position=self.tracker.poisson.state.mean[:, self.pos_inds],
               velocity=self.tracker.poisson.state.mean[:, self.vel_inds],
-              covar=self.tracker.poisson.state.covar,
+              covar_diag=np.diagonal(
+                  self.tracker.poisson.state.covar, axis1=-1, axis2=-2
+              ),
               # Search features
               weight=self.tracker.poisson.state.weight,
               # Agent features
@@ -322,6 +324,7 @@ class GraphSearchTrackEnv(gym.Env):
         timestep=self.timestep,
         position=self.sensor['position'],
         velocity=self.sensor['velocity'],
+        covar_diag=np.zeros(4),
         # Search features
         weight=0.0,
         # Agent features
@@ -454,6 +457,10 @@ class GraphSearchTrackEnv(gym.Env):
           velocity=self.tracker.mb.state.mean[
               :self.max_active_tracks, self.vel_inds
           ],
+          covar_diag=np.diagonal(
+              self.tracker.mb.state.covar[:self.max_active_tracks],
+              axis1=-1, axis2=-2
+          ),
           # Search features
           weight=np.zeros(num_new_track_nodes),
           # Agent features
@@ -599,7 +606,7 @@ class GraphSearchTrackEnv(gym.Env):
         'age',
         'position',
         'velocity',
-        # TODO: Covar diags
+        'covar_diag',
         # Search features
         'weight',
         # Agent features
@@ -619,6 +626,8 @@ class GraphSearchTrackEnv(gym.Env):
         )),
         age=np.log1p(node_dict['age']),
         position=node_dict['position'] / position_scale[None, :],
+        velocity=node_dict['velocity'] / self.scenario['max_velocity'],
+        covar_diag=np.log1p(np.sqrt(node_dict['covar_diag'])),
         # Search features
         weight=node_dict['weight'] / (node_dict['weight'].max() + 1e-10),
         # Track features
@@ -736,12 +745,12 @@ class GraphSearchTrackEnv(gym.Env):
   def get_reward(self) -> float:
     # Search reward
     w = self.tracker.poisson.state.weight
-    
+
     # Track reward
     if len(self.tracker.mb) > 0:
         # TODO
-        pass
-    
+      pass
+
     reward = -w.sum()
     return reward
 
@@ -905,17 +914,22 @@ class GraphSearchTrackEnv(gym.Env):
         np.linspace(*self.scenario['extents'][0], nx),
         np.linspace(*self.scenario['extents'][1], ny)
     )
+    search_grid = np.stack([search_grid[0].ravel(), search_grid[1].ravel()]).T
     # Plot gaussian mixture (likelihood) as an image
     mixture = np.zeros((nx, ny))
-    norm_weights = search_nodes['weight'] / \
+    norm_weights = (
+        search_nodes['weight'] /
         (np.max(search_nodes['weight']) + 1e-10)
+    )
     for i in range(len(search_nodes)):
-      mixture += search_nodes[i]['weight'] * \
+      mixture += (
+          search_nodes[i]['weight'] *
           scipy.stats.multivariate_normal.pdf(
-          np.stack([search_grid[0].ravel(), search_grid[1].ravel()]).T,
-          mean=search_nodes[i]['position'],
-          cov=search_nodes[i]['covar'][self.pos_inds, :][:, self.pos_inds]
-      ).reshape((nx, ny))
+              search_grid,
+              mean=search_nodes[i]['position'],
+              cov=search_nodes[i]['covar_diag'][self.pos_inds]
+          ).reshape((nx, ny))
+      )
       # Print search weight on the plot
       plt.text(
           search_nodes[i]['position'][0],

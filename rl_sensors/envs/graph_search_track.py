@@ -262,7 +262,7 @@ class GraphSearchTrackEnv(gym.Env):
         num_detections = meta.get('num_detections', 0)
         if measurement_type == 'update':
           num_detections += 1
-        initiated = num_detections > self.scenario['num_initiate_detections']
+        initiated = num_detections >= self.scenario['num_initiate_detections']
         self.tracker.mb_metadata[i].update(
             pd=track_pd[i],
             measurement_type=measurement_type,
@@ -554,7 +554,7 @@ class GraphSearchTrackEnv(gym.Env):
           if len(old_misses) > 0:
             old_misses['delete'] = True
         if len(track_history) >= self.max_track_history:
-          track_history[:-self.max_track_history]['delete'] = True
+          track_history[:-(self.max_track_history-1)]['delete'] = True
 
       # Add track nodes and edges
       self.graph.add_vertices(

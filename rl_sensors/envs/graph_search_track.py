@@ -665,7 +665,6 @@ class GraphSearchTrackEnv(gym.Env):
     edge_label_map = dict(
         transition=[1, 0],
         measurement=[0, 1],
-        none=[0, 0],
     )
     edges = self.graph.es
     if len(edges) > 0:
@@ -745,13 +744,28 @@ class GraphSearchTrackEnv(gym.Env):
   def get_reward(self) -> float:
     # Search reward
     w = self.tracker.poisson.state.weight
+    search_reward = -np.sum(w)
 
     # Track reward
     if len(self.tracker.mb) > 0:
-        # TODO
-      pass
+      initiated = np.array([
+          meta['initiated'] for meta in self.tracker.mb_metadata
+      ])
+      if np.any(initiated):
+        valid_mb = self.tracker.mb[initiated]
+        valid_covars = valid_mb.state.covar[
+            np.ix_(np.arange(len(valid_mb)), self.pos_inds, self.pos_inds)
+        ]
+        traces = np.trace(valid_covars, axis1=-2, axis2=-1)
+        track_reward = np.sum(
+            1 - np.clip(traces / self.scenario['max_trace'], 0, 1)
+        )
+      else:
+        track_reward = 0
+    else:
+      track_reward = 0
 
-    reward = -w.sum()
+    reward = search_reward + track_reward
     return reward
 
   def update_sensor_state(self, action: np.ndarray) -> None:

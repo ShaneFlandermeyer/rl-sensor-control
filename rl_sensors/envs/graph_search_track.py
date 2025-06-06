@@ -231,12 +231,14 @@ class GraphSearchTrackEnv(gym.Env):
       self.tracker.mb, self.tracker.mb_metadata = self.tracker.mb.prune(
           valid_fn=lambda mb: np.logical_and(
               mb.r > 1e-4,
-              np.linalg.trace(
+              np.trace(
                   mb.state.covar[
                       np.ix_(
                           np.arange(len(mb)), self.pos_inds, self.pos_inds
                       )
-                  ]
+                  ],
+                  axis1=-1,
+                  axis2=-2
               ) < self.scenario['max_trace']
           ),
           meta=self.tracker.mb_metadata,
@@ -818,13 +820,11 @@ class GraphSearchTrackEnv(gym.Env):
 
     # Measure
     states = np.array([path[-1] for path in self.ground_truth])
-    Z = self.measurement_model(states, noise=True)
+    Z = self.measurement_model(states, noise=True, rng=self.np_random)
 
     # Only keep detected measurements
     pd = self.pd(states, sensor=self.sensor, pos_inds=self.pos_inds)
-    detected = self.np_random.uniform(
-        size=len(self.ground_truth)
-    ) < pd
+    detected = self.np_random.uniform(size=len(self.ground_truth)) < pd
     Z = Z[detected]
 
     return Z

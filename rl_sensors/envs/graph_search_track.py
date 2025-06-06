@@ -67,13 +67,13 @@ class GraphSearchTrackEnv(gym.Env):
         global_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(1, 2),
+            shape=(1, 6),
             dtype=np.float64,
         ),
         node_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_nodes, 19),
+            shape=(self.max_nodes, 20),
             dtype=np.float64,
         ),
         node_mask=gym.spaces.MultiBinary(self.max_nodes),
@@ -102,7 +102,7 @@ class GraphSearchTrackEnv(gym.Env):
         birth_rate=1/25,
         clutter_rate=0.0,
         dt=1.0,
-        max_trace=50**2 + 50**2,
+        max_trace=25**2 + 25**2,
         num_initiate_detections=3,
     )
     self.sensor = dict(
@@ -239,7 +239,7 @@ class GraphSearchTrackEnv(gym.Env):
                   ],
                   axis1=-1,
                   axis2=-2
-              ) < self.scenario['max_trace']
+              ) < 10*self.scenario['max_trace']
           ),
           meta=self.tracker.mb_metadata,
       )
@@ -304,9 +304,12 @@ class GraphSearchTrackEnv(gym.Env):
               # Search features
               weight=self.tracker.poisson.state.weight,
               # Agent features
-              sensor_action=np.array([[0.0]]),
+              sensor_action=np.zeros(
+                  (len(self.tracker.poisson), self.action_space.shape[0])
+              ),
               # Track features
               measurement_type="none",
+              track_quality=np.zeros(len(self.tracker.poisson)),
               new=False,
               initiated=False,
           )
@@ -333,6 +336,7 @@ class GraphSearchTrackEnv(gym.Env):
         sensor_action=self.sensor['action'],
         # Track features
         measurement_type="none",
+        track_quality=0.0,
         new=False,
         initiated=False,
     )
@@ -469,6 +473,7 @@ class GraphSearchTrackEnv(gym.Env):
           sensor_action=np.zeros((num_new_track_nodes, 1)),
           # Track features
           measurement_type=[],
+          track_quality=[],
           new=[],
           initiated=[],
       )
@@ -490,11 +495,21 @@ class GraphSearchTrackEnv(gym.Env):
         track_measurement_type = meta['measurement_type']
         track_initated = meta['initiated']
         track_new = meta['new']
+
+        track_covar = self.tracker.mb.state.covar[i]
+        track_trace = np.trace(
+            track_covar[np.ix_(self.pos_inds, self.pos_inds)]
+        )
+        track_quality = 1 - np.clip(
+            track_trace / self.scenario['max_trace'], 0, 1
+        )
         track_node_attributes.update(
             id=track_node_attributes['id'] + [track_id],
             name=track_node_attributes['name'] + [track_node_name],
             measurement_type=track_node_attributes['measurement_type'] +
             [track_measurement_type],
+            track_quality=track_node_attributes['track_quality'] +
+            [track_quality],
             new=track_node_attributes['new'] + [track_new],
             initiated=track_node_attributes['initiated'] + [track_initated],
         )
@@ -615,6 +630,7 @@ class GraphSearchTrackEnv(gym.Env):
         'sensor_action',
         # Track features
         'measurement_type',
+        'track_quality',
         'new',
         'initiated',
     ]
@@ -725,11 +741,38 @@ class GraphSearchTrackEnv(gym.Env):
     ###########################
     # Global features
     ###########################
+    # Search state
     w_sum = np.sum(self.tracker.poisson.state.weight, keepdims=True)
     w_max = np.max(self.tracker.poisson.state.weight, keepdims=True)
+
+    # Track state
+    if len(self.tracker.mb) > 0:
+      initiated = np.array([
+          meta['initiated'] for meta in self.tracker.mb_metadata
+      ])
+      num_active_tracks = np.count_nonzero(initiated)
+      if num_active_tracks > 0:
+        valid_mb = self.tracker.mb[initiated]
+        valid_covars = valid_mb.state.covar[
+            np.ix_(np.arange(len(valid_mb)), self.pos_inds, self.pos_inds)
+        ]
+        traces = np.trace(valid_covars, axis1=-1, axis2=-2)
+        track_qualities = 1 - np.clip(
+            traces / self.scenario['max_trace'], 0, 1
+        )
+      else:
+        track_qualities = np.zeros(1)
+    else:
+      num_active_tracks = 0
+      track_qualities = np.zeros(1)
+
     global_features = np.stack([
         w_sum,
         np.log(w_max + 1e-10),
+        np.array([num_active_tracks]),
+        np.mean(track_qualities, keepdims=True),
+        np.min(track_qualities, keepdims=True),
+        np.max(track_qualities, keepdims=True),
     ], axis=-1)
 
     obs = dict(
@@ -758,7 +801,7 @@ class GraphSearchTrackEnv(gym.Env):
         valid_covars = valid_mb.state.covar[
             np.ix_(np.arange(len(valid_mb)), self.pos_inds, self.pos_inds)
         ]
-        traces = np.trace(valid_covars, axis1=-2, axis2=-1)
+        traces = np.trace(valid_covars, axis1=-1, axis2=-2)
         track_reward = np.sum(
             1 - np.clip(traces / self.scenario['max_trace'], 0, 1)
         )

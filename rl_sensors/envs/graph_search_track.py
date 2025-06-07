@@ -102,13 +102,13 @@ class GraphSearchTrackEnv(gym.Env):
         birth_rate=1/25,
         clutter_rate=0.0,
         dt=1.0,
-        max_trace=25**2 + 25**2,
+        max_trace=50**2,
         num_initiate_detections=3,
     )
     self.sensor = dict(
         position=np.zeros(2),
         velocity=np.zeros(2),
-        beamwidth=16*np.pi/180,
+        beamwidth=20*np.pi/180,
         steering_angle=0,
         action=np.zeros(1),
     )
@@ -122,7 +122,7 @@ class GraphSearchTrackEnv(gym.Env):
     self.vel_inds = [1, 3]
     self.transition_model = ConstantVelocity(
         state_dim=4,
-        w=1e-4,
+        w=1e-3,
         position_inds=self.pos_inds,
         velocity_inds=self.vel_inds,
         noise_type='continuous',
@@ -310,8 +310,8 @@ class GraphSearchTrackEnv(gym.Env):
               # Track features
               measurement_type="none",
               track_quality=np.zeros(len(self.tracker.poisson)),
-              new=False,
-              initiated=False,
+              existence_probability=np.zeros(len(self.tracker.poisson)),
+              initiation_progress=np.zeros(len(self.tracker.poisson)),
           )
       )
     else:
@@ -337,12 +337,13 @@ class GraphSearchTrackEnv(gym.Env):
         # Track features
         measurement_type="none",
         track_quality=0.0,
-        new=False,
-        initiated=False,
+        existence_probability=0.0,
+        initiation_progress=0.0,
     )
     current_agent = self.graph.vs(
         type_eq='agent', timestep_eq=self.timestep
     )[0]
+    # TODO: Prettify agent edge logic like for track nodes
     if self.timestep > 0:
       # Add an edge from the previous agent node to the current
       last_agent = self.graph.vs(
@@ -352,15 +353,25 @@ class GraphSearchTrackEnv(gym.Env):
           np.array(current_agent['position']) -
           np.array(last_agent['position']),
       )
+      if agent_edge_dist > 1e-6:
+        agent_edge_angles = [
+            np.arctan2(
+                last_agent['position'][1] - current_agent['position'][1],
+                last_agent['position'][0] - current_agent['position'][0]
+            ),
+            np.arctan2(
+                current_agent['position'][1] - last_agent['position'][1],
+                current_agent['position'][0] - last_agent['position'][0]
+            )
+        ]
+      else:
+        agent_edge_angles = [0, 0]
       self.graph.add_edge(
           type='transition',
           source=last_agent,
           target=current_agent,
           distance=agent_edge_dist,
-          angle=np.arctan2(
-              last_agent['position'][1] - current_agent['position'][1],
-              last_agent['position'][0] - current_agent['position'][0]
-          ),
+          angle=agent_edge_angles[0],
           pd=0.0,
       )
       self.graph.add_edge(
@@ -368,10 +379,7 @@ class GraphSearchTrackEnv(gym.Env):
           source=current_agent,
           target=last_agent,
           distance=agent_edge_dist,
-          angle=np.arctan2(
-              current_agent['position'][1] - last_agent['position'][1],
-              current_agent['position'][0] - last_agent['position'][0]
-          ),
+          angle=agent_edge_angles[1],
           pd=0.0,
       )
 
@@ -405,7 +413,7 @@ class GraphSearchTrackEnv(gym.Env):
                 for i in detected_search
             ],
             attributes=dict(
-                type='measurement',
+                type='update',
                 pd=search_pd[detected_search],
                 distance=search_edge_dist,
                 angle=np.arctan2(
@@ -420,7 +428,7 @@ class GraphSearchTrackEnv(gym.Env):
                 for i in detected_search
             ],
             attributes=dict(
-                type='measurement',
+                type='update',
                 pd=search_pd[detected_search],
                 distance=search_edge_dist,
                 angle=np.arctan2(
@@ -474,8 +482,8 @@ class GraphSearchTrackEnv(gym.Env):
           # Track features
           measurement_type=[],
           track_quality=[],
-          new=[],
-          initiated=[],
+          existence_probability=self.tracker.mb.r[:num_new_track_nodes],
+          initiation_progress=[],
       )
       track_edge_attributes = dict(
           type=[],
@@ -493,8 +501,10 @@ class GraphSearchTrackEnv(gym.Env):
         track_id = meta['id']
         track_node_name = f"{track_id}_t{self.timestep}"
         track_measurement_type = meta['measurement_type']
-        track_initated = meta['initiated']
-        track_new = meta['new']
+        track_initiation_progress = np.clip(
+            meta['num_detections'] / self.scenario['num_initiate_detections'],
+            0, 1
+        )
 
         track_covar = self.tracker.mb.state.covar[i]
         track_trace = np.trace(
@@ -510,8 +520,8 @@ class GraphSearchTrackEnv(gym.Env):
             [track_measurement_type],
             track_quality=track_node_attributes['track_quality'] +
             [track_quality],
-            new=track_node_attributes['new'] + [track_new],
-            initiated=track_node_attributes['initiated'] + [track_initated],
+            initiation_progress=track_node_attributes['initiation_progress'] +
+            [track_initiation_progress],
         )
 
         # Transition edge
@@ -521,16 +531,21 @@ class GraphSearchTrackEnv(gym.Env):
           track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
           last_update_pos = np.array(last_update[-1]['position'])
           distance = np.linalg.norm(track_pos - last_update_pos)
-          angles = [
-              np.arctan2(
-                  last_update_pos[1] - track_pos[1],
-                  last_update_pos[0] - track_pos[0]
-              ),
-              np.arctan2(
-                  track_pos[1] - last_update_pos[1],
-                  track_pos[0] - last_update_pos[0]
-              )
-          ]
+          if distance > 1e-6:
+            angles = [
+                np.arctan2(
+                    last_update_pos[1] - track_pos[1],
+                    last_update_pos[0] - track_pos[0]
+                ),
+                np.arctan2(
+                    track_pos[1] - last_update_pos[1],
+                    track_pos[0] - last_update_pos[0]
+                )
+            ]
+          else:
+            # Handle angle weirdness at zero distances
+            angles = [0, 0]
+
           track_edges.extend([
               (last_update[-1], track_node_name),
               (track_node_name, last_update[-1])
@@ -563,7 +578,7 @@ class GraphSearchTrackEnv(gym.Env):
             (track_node_name, current_agent_node)
         ])
         track_edge_attributes.update(
-            type=track_edge_attributes['type'] + 2*['measurement'],
+            type=track_edge_attributes['type'] + 2*['update'],
             pd=track_edge_attributes['pd'] + 2*[track_pd],
             distance=track_edge_attributes['distance'] + 2*[distance],
             angle=track_edge_attributes['angle'] + 2*angles,
@@ -631,8 +646,8 @@ class GraphSearchTrackEnv(gym.Env):
         # Track features
         'measurement_type',
         'track_quality',
-        'new',
-        'initiated',
+        'existence_probability',
+        'initiation_progress',
     ]
     node_dict = {
         k: np.array(nodes[k]).reshape((len(nodes), -1)) for k in node_keys
@@ -682,7 +697,7 @@ class GraphSearchTrackEnv(gym.Env):
     ###########################
     edge_label_map = dict(
         transition=[1, 0],
-        measurement=[0, 1],
+        update=[0, 1],
     )
     edges = self.graph.es
     if len(edges) > 0:
@@ -1009,6 +1024,16 @@ class GraphSearchTrackEnv(gym.Env):
           track_nodes['initiated'], 'green', 'orange'
       )
       plt.scatter(track_pos[:, 0], track_pos[:, 1], c=color, s=50)
+      # Print track quality
+      for i, pos in enumerate(track_pos):
+        plt.text(
+            pos[0], pos[1],
+            f"{track_nodes[i]['track_quality']:.2f}",
+            fontsize=8,
+            color='white',
+            ha='center',
+            va='center',
+        )
 
     # Edges
     if len(graph.es) > 0:

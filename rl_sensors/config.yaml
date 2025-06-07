@@ -23,7 +23,7 @@ encoder:
   embed_dim: 128
   num_layers: 2
   num_heads: 4
-  learning_rate: 3e-4
+  learning_rate: 1e-4
   tabulate: True
 
 world_model:
@@ -44,7 +44,7 @@ world_model:
 tdmpc2:
   # Planning
   mpc: True
-  horizon: 1
+  horizon: 3
   mppi_iterations: 6
   population_size: 512
   policy_prior_samples: 24

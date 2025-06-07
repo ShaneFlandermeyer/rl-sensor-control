@@ -11,6 +11,7 @@ from einops import rearrange
 from rl_sensors.layers.attention import PMA, AttentionBlock
 from rl_sensors.layers.gat import GATv2
 from rl_sensors.layers.gin import GIN
+from rl_sensors.layers.gcn import GCN
 from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 from rl_sensors.layers.activation import mish
 
@@ -93,10 +94,10 @@ class GraphEncoder(nn.Module):
       W_skip = nn.Dense(
           self.embed_dim, kernel_init=self.kernel_init, name=f'W_skip_{i}'
       )
-      gnn = GATv2(
+      gnn = GCN(
           embed_dim=self.embed_dim,
-          num_heads=self.num_heads,
-          share_weights=True,
+          normalize=True,
+          add_self_edges=True,
           kernel_init=self.kernel_init,
       )
 

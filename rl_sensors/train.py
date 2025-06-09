@@ -92,7 +92,7 @@ def train(cfg: dict):
           embed_dim=encoder_config.embed_dim,
           num_layers=encoder_config.num_layers,
           num_heads=encoder_config.num_heads,
-          kernel_init=nn.initializers.xavier_normal(),
+          kernel_init=nn.initializers.truncated_normal(0.02),
       ),
       NormedLinear(model_config.latent_dim, activation=None, dtype=dtype)
   ]
@@ -138,7 +138,7 @@ def train(cfg: dict):
       tx=optax.chain(
           optax.zero_nans(),
           optax.clip_by_global_norm(model_config.max_grad_norm),
-          optax.adamw(encoder_config.learning_rate),
+          optax.adam(encoder_config.learning_rate),
       )
   )
 
@@ -213,7 +213,7 @@ def train(cfg: dict):
             observation,
             prev_plan=plan,
             deterministic=False,
-            train=False,
+            train=True,
             key=action_key
         )
 

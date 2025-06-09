@@ -345,8 +345,8 @@ class GraphSearchTrackEnv(gym.Env):
         distance=[],
         angle=[],
     )
+    # Agent transition edge
     if self.timestep > 0:
-      # Add an edge from the previous agent node to the current
       last_agent = self.graph.vs(
           type_eq='agent', timestep_eq=self.timestep-1
       )[0]
@@ -383,7 +383,7 @@ class GraphSearchTrackEnv(gym.Env):
     # Search detection edges
     search_nodes = self.graph.vs(type_eq='search')
     search_pos = np.array(search_nodes['position'])
-    sensor_pos = np.array(self.sensor['position'])
+    sensor_pos = self.sensor['position']
     if self.timestep > 0:
       search_pd = self.pd(
           object_state=self.tracker.poisson.state,
@@ -427,7 +427,7 @@ class GraphSearchTrackEnv(gym.Env):
             2*num_search_updates*['update'],
             pd=agent_edge_attributes['pd'] + 2*search_edge_pd,
             distance=agent_edge_attributes['distance'] + 2*search_edge_dist,
-            angle=agent_edge_attributes['angle'] + 2*search_edge_angles,
+            angle=agent_edge_attributes['angle'] + search_edge_angles,
         )
 
     self.graph.add_vertex(**current_agent_node)

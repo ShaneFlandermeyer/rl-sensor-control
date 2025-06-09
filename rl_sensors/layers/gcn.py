@@ -23,17 +23,17 @@ class GCN(nn.Module):
   @nn.compact
   def __call__(self,
                node_features: jax.Array,
-               edge_features: jax.Array,
-               global_features: jax.Array,
                senders: jax.Array,
-               receivers: jax.Array
+               receivers: jax.Array,
+               edge_features: Optional[jax.Array] = None,
+               global_features: Optional[jax.Array] = None,
                ) -> jax.Array:
-    input_graph = dict(
+    graph = dict(
         node_features=node_features,
+        senders=senders,
+        receivers=receivers,
         edge_features=edge_features,
         global_features=global_features,
-        senders=senders,
-        receivers=receivers
     )
     batch_dims = node_features.shape[:-2]
     num_nodes = node_features.shape[-2]
@@ -46,10 +46,8 @@ class GCN(nn.Module):
     # Node update
     ####################################
     W = nn.Dense(self.embed_dim, name='W', kernel_init=self.kernel_init)
-    node_features = W(node_features)
-    send_edges = jnp.take_along_axis(
-        node_features, senders[..., None], axis=-2
-    )
+    h = W(node_features)
+    send_edges = jnp.take_along_axis(h, senders[..., None], axis=-2)
 
     ####################################
     # Edge update
@@ -60,9 +58,9 @@ class GCN(nn.Module):
 
     if self.add_self_edges:
       if edge_features is None:
-        self_edges = node_features
+        self_edges = h
       else:
-        self_edges = mish(node_features)
+        self_edges = mish(h)
       send_edges = jnp.concatenate([send_edges, self_edges], axis=-2)
       node_inds = jnp.tile(jnp.arange(num_nodes), [*batch_dims, 1])
       senders = jnp.concatenate([senders, node_inds], axis=-1)
@@ -83,10 +81,6 @@ class GCN(nn.Module):
 
     node_features = segment_sum(send_edges, receivers, num_nodes)
 
-    return dict(
-        node_features=node_features,
-        edge_features=input_graph['edge_features'],
-        global_features=input_graph['global_features'],
-        senders=input_graph['senders'],
-        receivers=input_graph['receivers'],
-    )
+    # Update graph and return
+    graph.update(node_features=node_features)
+    return graph

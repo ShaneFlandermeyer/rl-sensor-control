@@ -60,7 +60,11 @@ class GraphEncoder(nn.Module):
     ])(node_features)
 
     encode_token = jnp.tile(
-        self.param('encode_token', nn.initializers.zeros, (1, self.embed_dim)),
+        self.param(
+            'encode_token',
+            nn.initializers.truncated_normal(0.02),
+            (1, self.embed_dim)
+        ),
         [*batch_dims, 1, 1]
     )
     global_embed = AttentionBlock(
@@ -83,9 +87,9 @@ class GraphEncoder(nn.Module):
     ######################
     graph = dict(
         node_features=node_features,
-        edge_features=edge_features,
         senders=senders,
         receivers=receivers,
+        edge_features=edge_features,
         global_features=None,
     )
 

@@ -30,7 +30,7 @@ class GATv2(nn.Module):
     ############################
     # Pre-processing
     ############################
-    input_graph = dict(
+    graph = dict(
         node_features=node_features,
         edge_features=edge_features,
         global_features=global_features,
@@ -63,10 +63,11 @@ class GATv2(nn.Module):
       W_e = nn.Dense(self.embed_dim, name='W_e', kernel_init=self.kernel_init)
       x += W_e(edge_features)
 
+    x = mish(x)
+
     ############################
     # Attention
     ############################
-    x = mish(x)
     x = rearrange(x, '... (h d) -> ... h d', h=self.num_heads)
     a = self.param(
         'a',
@@ -74,21 +75,19 @@ class GATv2(nn.Module):
         (self.num_heads, self.embed_dim // self.num_heads)
     )
     a = jnp.tile(a, (*x.shape[:-2], 1, 1))
-    attn_logits = jnp.sum(x * a, axis=-1, keepdims=True)
-    attn_weights = segment_softmax(attn_logits, receivers, num_nodes)
+    logits = jnp.sum(x * a, axis=-1, keepdims=True)
+    weights = segment_softmax(logits, receivers, num_nodes)
 
     ############################
     # Node Update
     ############################
-    edges = rearrange(send_edges, '... (h d) -> ... h d', h=self.num_heads)
-    edges = attn_weights * edges
-    edges = rearrange(edges, '... h d -> ... (h d)')
-    new_nodes = segment_sum(edges, receivers, num_nodes)
-
-    return dict(
-        node_features=new_nodes,
-        edge_features=input_graph['edge_features'],
-        global_features=input_graph['global_features'],
-        senders=input_graph['senders'],
-        receivers=input_graph['receivers'],
+    send_edges = rearrange(
+        send_edges, '... (h d) -> ... h d', h=self.num_heads
     )
+    send_edges = weights * send_edges
+    send_edges = rearrange(send_edges, '... h d -> ... (h d)')
+    updated_node_features = segment_sum(send_edges, receivers, num_nodes)
+
+    # Update graph
+    graph.update(node_features=updated_node_features)
+    return graph

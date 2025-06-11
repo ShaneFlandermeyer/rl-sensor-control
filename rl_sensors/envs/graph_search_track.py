@@ -36,7 +36,7 @@ class GraphSearchTrackEnv(gym.Env):
 
     # Track config
     self.max_track_history = 3
-    self.max_active_tracks = 5
+    self.max_active_tracks = 10
     self.max_track_nodes = self.max_active_tracks * self.max_track_history
 
     self.max_nodes = self.max_search_nodes + \
@@ -122,7 +122,7 @@ class GraphSearchTrackEnv(gym.Env):
     self.vel_inds = [1, 3]
     self.transition_model = ConstantVelocity(
         state_dim=4,
-        w=1e-3,
+        w=1e-1,
         position_inds=self.pos_inds,
         velocity_inds=self.vel_inds,
         noise_type='continuous',
@@ -383,7 +383,6 @@ class GraphSearchTrackEnv(gym.Env):
     # Search detection edges
     search_nodes = self.graph.vs(type_eq='search')
     search_pos = np.array(search_nodes['position'])
-    sensor_pos = self.sensor['position']
     if self.timestep > 0:
       search_pd = self.pd(
           object_state=self.tracker.poisson.state,
@@ -402,16 +401,16 @@ class GraphSearchTrackEnv(gym.Env):
         # NOTE: Assumes search nodes have the same ordering as the search grid
         search_edge_pd = search_pd[detected_search].tolist()
         search_edge_dist = np.linalg.norm(
-            search_pos[detected_search] - sensor_pos, axis=-1
+            search_pos[detected_search] - self.sensor['position'], axis=-1
         ).tolist()
         search_edge_angles = np.concatenate([
             np.arctan2(
-                search_pos[detected_search, 1] - sensor_pos[1],
-                search_pos[detected_search, 0] - sensor_pos[0]
+                search_pos[detected_search, 1] - self.sensor['position'][1],
+                search_pos[detected_search, 0] - self.sensor['position'][0]
             ),
             np.arctan2(
-                sensor_pos[1] - search_pos[detected_search, 1],
-                sensor_pos[0] - search_pos[detected_search, 0]
+                self.sensor['position'][1] - search_pos[detected_search, 1],
+                self.sensor['position'][0] - search_pos[detected_search, 0]
             )
         ]).tolist()
 
@@ -518,13 +517,14 @@ class GraphSearchTrackEnv(gym.Env):
 
         # Transition edge
         track_history = self.graph.vs(type_eq='track', id_eq=track_id)
-        last_update = track_history(measurement_type_eq='update')
-        if len(last_update) > 0:
+        track_updates = track_history(measurement_type_eq='update')
+        if len(track_updates) > 0:
+          last_update = track_updates[-1]
+          last_update_pos = np.array(last_update['position'])
           track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
-          last_update_pos = np.array(last_update[-1]['position'])
-          distance = np.linalg.norm(track_pos - last_update_pos)
-          if distance > 1e-6:
-            angles = [
+          track_transition_dist = np.linalg.norm(track_pos - last_update_pos)
+          if track_transition_dist > 1e-6:
+            track_transition_angles = [
                 np.arctan2(
                     last_update_pos[1] - track_pos[1],
                     last_update_pos[0] - track_pos[0]
@@ -536,46 +536,44 @@ class GraphSearchTrackEnv(gym.Env):
             ]
           else:
             # Handle angle weirdness at zero distances
-            angles = [0, 0]
+            track_transition_angles = [0, 0]
 
           track_edges.extend([
-              (last_update[-1], track_node_name),
-              (track_node_name, last_update[-1])
+              (last_update['name'], track_node_name),
+              (track_node_name, last_update['name'])
           ])
           track_edge_attributes.update(
               type=track_edge_attributes['type'] + 2*['transition'],
               pd=track_edge_attributes['pd'] + 2*[0.0],
-              distance=track_edge_attributes['distance'] + 2*[distance],
-              angle=track_edge_attributes['angle'] + angles,
+              distance=track_edge_attributes['distance'] +
+              2*[track_transition_dist],
+              angle=track_edge_attributes['angle'] + track_transition_angles,
           )
 
         # Measurement update/miss edge
-        if track_measurement_type != 'predict':
-          track_pd = self.tracker.mb_metadata[i]['pd']
-          sensor_pos = self.sensor['position']
-          track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
-          distance = np.linalg.norm(track_pos - sensor_pos)
-          angles = [
-              np.arctan2(
-                  sensor_pos[1] - track_pos[1],
-                  sensor_pos[0] - track_pos[0]
-              ),
-              np.arctan2(
-                  track_pos[1] - sensor_pos[1],
-                  track_pos[0] - sensor_pos[0]
-              )
-          ]
-
-          track_edges.extend([
-              (current_agent_node['name'], track_node_name),
-              (track_node_name, current_agent_node['name'])
-          ])
-          track_edge_attributes.update(
-              type=track_edge_attributes['type'] + 2*['update'],
-              pd=track_edge_attributes['pd'] + 2*[track_pd],
-              distance=track_edge_attributes['distance'] + 2*[distance],
-              angle=track_edge_attributes['angle'] + angles,
-          )
+        track_pd = self.tracker.mb_metadata[i]['pd']
+        track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
+        track_update_dist = np.linalg.norm(track_pos - self.sensor['position'])
+        track_update_angles = [
+            np.arctan2(
+                track_pos[1] - self.sensor['position'][1],
+                track_pos[0] - self.sensor['position'][0]
+            ),
+            np.arctan2(
+                self.sensor['position'][1] - track_pos[1],
+                self.sensor['position'][0] - track_pos[0]
+            ),
+        ]
+        track_edges.extend([
+            (track_node_name, current_agent_node['name']),
+            (current_agent_node['name'], track_node_name),
+        ])
+        track_edge_attributes.update(
+            type=track_edge_attributes['type'] + 2*['update'],
+            pd=track_edge_attributes['pd'] + 2*[track_pd],
+            distance=track_edge_attributes['distance'] + 2*[track_update_dist],
+            angle=track_edge_attributes['angle'] + track_update_angles,
+        )
 
         # Track graph pruning
         old_predicts = track_history(measurement_type_eq='predict')
@@ -599,7 +597,9 @@ class GraphSearchTrackEnv(gym.Env):
     ###############################
     # Global graph update
     ###############################
-    self.graph.delete_vertices(self.graph.vs(delete_eq=True))
+    deleted_nodes = self.graph.vs(delete_eq=True)
+    if len(deleted_nodes) > 0:
+      self.graph.delete_vertices(deleted_nodes)
     self.graph.vs['age'] = self.timestep - np.array(self.graph.vs['timestep'])
 
   def get_obs(self) -> Dict[str, Any]:
@@ -792,31 +792,27 @@ class GraphSearchTrackEnv(gym.Env):
     return obs
 
   def get_reward(self) -> float:
-    # Search reward
     w = self.tracker.poisson.state.weight
-    search_reward = -np.sum(w)
+    search_reward = -w.sum()
 
-    # Track reward
-    if len(self.tracker.mb) > 0:
-      initiated = np.array([
-          meta['initiated'] for meta in self.tracker.mb_metadata
-      ])
-      if np.any(initiated):
-        valid_mb = self.tracker.mb[initiated]
-        valid_covars = valid_mb.state.covar[
-            np.ix_(np.arange(len(valid_mb)), self.pos_inds, self.pos_inds)
-        ]
-        traces = np.linalg.trace(valid_covars)
-        track_reward = np.sum(
-            1 - np.clip(traces / self.scenario['max_trace'], 0, 1)
-        )
-      else:
-        track_reward = 0
-    else:
-      track_reward = 0
+    initiated = np.array([
+        meta['initiated'] for meta in self.tracker.mb_metadata
+    ])
+    num_confirmed = np.count_nonzero(initiated)
 
-    reward = search_reward + track_reward
-    return reward
+    # Search-only case
+    if num_confirmed == 0:
+      return search_reward
+
+    # Search-and-track case
+    mb = self.tracker.mb[initiated]
+    covars = mb.state.covar[
+        np.ix_(np.arange(len(mb)), self.pos_inds, self.pos_inds)
+    ]
+    traces = np.linalg.trace(covars)
+    track_errors = traces / self.scenario['max_trace']
+    track_reward = (1 - track_errors.clip(0, 1)).sum()
+    return search_reward + track_reward
 
   def update_sensor_state(self, action: np.ndarray) -> None:
     self.sensor['steering_angle'] = action[0] * np.pi
@@ -835,7 +831,7 @@ class GraphSearchTrackEnv(gym.Env):
           scenario=self.scenario,
           pos_inds=self.pos_inds,
       )
-      survived = self.np_random.uniform(size=len(self.ground_truth)) < ps
+      survived = ps > 0  # Only actually die outside scenario region
       for i, path in enumerate(self.ground_truth.copy()):
         if survived[i]:
           path.append(next_states[i])
@@ -852,7 +848,7 @@ class GraphSearchTrackEnv(gym.Env):
           p=birth_distribution.weight / np.sum(birth_distribution.weight)
       )
       new_states = birth_distribution[inds].sample(
-          num_points=1, rng=self.np_random
+          num_points=1, rng=self.np_random, max_distance=1,
       )
       # Clip to scenario extents
       new_states[..., self.pos_inds] = np.clip(
@@ -933,7 +929,7 @@ class GraphSearchTrackEnv(gym.Env):
         x[:, 1] >= scenario['extents'][1][0],
         x[:, 1] <= scenario['extents'][1][1],
     ])
-    ps = np.where(in_region, 0.999, 0)[:, None]
+    ps = np.where(in_region, 0.99, 0)[:, None]
 
     return np.average(ps, weights=weights, axis=-1)
 
@@ -1010,9 +1006,10 @@ class GraphSearchTrackEnv(gym.Env):
     track_nodes = graph.vs(type_eq='track')
     if len(track_nodes) > 0:
       track_pos = np.array(track_nodes['position'])
-      color = np.where(
-          track_nodes['initiation_progress'] == 1, 'green', 'orange'
-      )
+      color = [
+          'green' if track_nodes[i]['initiation_progress'] == 1 else 'orange'
+          for i in range(len(track_nodes))
+      ]
       plt.scatter(track_pos[:, 0], track_pos[:, 1], c=color, s=50)
       # Print track quality
       for i, pos in enumerate(track_pos):

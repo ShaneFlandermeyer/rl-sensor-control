@@ -1,19 +1,16 @@
 
-from functools import partial
 from typing import *
 
 import flax.linen as nn
 import gymnasium as gym
 import jax
 import jax.numpy as jnp
-import numpy as np
 from einops import rearrange
-from rl_sensors.layers.attention import PMA, AttentionBlock
-from rl_sensors.layers.gat import GATv2
-from rl_sensors.layers.gin import GIN
-from rl_sensors.layers.gcn import GCN
+
 from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 from rl_sensors.layers.activation import mish
+from rl_sensors.layers.attention import PGAT
+from rl_sensors.layers.gat import GATv2
 
 
 class GraphEncoder(nn.Module):
@@ -50,39 +47,6 @@ class GraphEncoder(nn.Module):
       )
 
     ######################
-    # Encode
-    ######################
-    node_features = nn.Sequential([
-        nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-        nn.LayerNorm(),
-        mish,
-        nn.Dense(self.embed_dim, kernel_init=self.kernel_init),
-    ])(node_features)
-
-    encode_token = jnp.tile(
-        self.param(
-            'encode_token',
-            nn.initializers.truncated_normal(0.02),
-            (1, self.embed_dim)
-        ),
-        [*batch_dims, 1, 1]
-    )
-    global_embed = AttentionBlock(
-        embed_dim=self.embed_dim,
-        num_heads=self.num_heads,
-        hidden_dim=self.embed_dim,
-        normalize_qk=True,
-        use_ffn=True,
-        kernel_init=self.kernel_init,
-    )(
-        query=encode_token,
-        key=node_features,
-        query_mask=None,
-        key_mask=node_mask
-    )
-    node_features = mish(node_features + global_embed)
-
-    ######################
     # Graph Processing
     ######################
     graph = dict(
@@ -98,34 +62,34 @@ class GraphEncoder(nn.Module):
       W_skip = nn.Dense(
           self.embed_dim, kernel_init=self.kernel_init, name=f'W_skip_{i}'
       )
-      gnn = GCN(
+      gnn = GATv2(
           embed_dim=self.embed_dim,
-          normalize=True,
-          add_self_edges=True,
+          num_heads=self.num_heads,
+          share_weights=False,
           kernel_init=self.kernel_init,
       )
 
       # Node update
-      graph['node_features'] = nn.LayerNorm()(graph['node_features'])
       skip = W_skip(graph['node_features'])
       graph = gnn(**graph)
-      graph['node_features'] = mish(graph['node_features'] + skip)
+      graph['node_features'] = mish(
+          nn.LayerNorm()(graph['node_features'] + skip)
+      )
 
     ######################
     # Decode
     ######################
-    decode_token = jnp.take_along_axis(
+    current_agent_node = jnp.take_along_axis(
         graph['node_features'], current_agent_node_ind[..., None], axis=-2
     )
-    x = AttentionBlock(
+    x = PGAT(
         embed_dim=self.embed_dim,
         num_heads=self.num_heads,
-        hidden_dim=self.embed_dim,
-        normalize_qk=True,
-        use_ffn=False,
         kernel_init=self.kernel_init,
+        normalize_inputs=True,
+        residual=True,
     )(
-        query=decode_token,
+        query=current_agent_node,
         key=graph['node_features'],
         query_mask=None,
         key_mask=node_mask
@@ -145,7 +109,7 @@ if __name__ == '__main__':
 
   embed_dim = 128
   latent_dim = 512
-  num_layers = 1
+  num_layers = 3
   num_heads = 4
   model = nn.Sequential([
       GraphEncoder(
@@ -154,7 +118,7 @@ if __name__ == '__main__':
           num_heads=num_heads,
       ),
       nn.Dense(latent_dim)
-      #   NormedLinear(latent_dim, activation=mish),
+        # NormedLinear(latent_dim, activation=mish),
   ])
 
   model.init(jax.random.PRNGKey(0), obs)

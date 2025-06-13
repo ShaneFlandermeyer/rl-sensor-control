@@ -11,6 +11,7 @@ from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 from rl_sensors.layers.activation import mish
 from rl_sensors.layers.attention import PGAT
 from rl_sensors.layers.gat import GATv2
+from rl_sensors.layers.gcn import GCN
 
 
 class GraphEncoder(nn.Module):
@@ -62,13 +63,12 @@ class GraphEncoder(nn.Module):
       W_skip = nn.Dense(
           self.embed_dim, kernel_init=self.kernel_init, name=f'W_skip_{i}'
       )
-      gnn = GATv2(
+      gnn = GCN(
           embed_dim=self.embed_dim,
-          num_heads=self.num_heads,
-          share_weights=False,
+          normalize=True,
+          add_self_edges=False,
           kernel_init=self.kernel_init,
       )
-
       # Node update
       skip = W_skip(graph['node_features'])
       graph = gnn(**graph)
@@ -107,7 +107,7 @@ if __name__ == '__main__':
   for i in range(0):
     obs = env.step(env.action_space.sample())[0]
 
-  embed_dim = 128
+  embed_dim = 160
   latent_dim = 512
   num_layers = 3
   num_heads = 4
@@ -123,3 +123,4 @@ if __name__ == '__main__':
 
   model.init(jax.random.PRNGKey(0), obs)
   print(model.tabulate(jax.random.key(0), obs, compute_flops=True))
+

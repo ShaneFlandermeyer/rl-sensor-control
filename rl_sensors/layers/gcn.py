@@ -79,8 +79,8 @@ class GCN(nn.Module):
           send_degree.clip(1, None) * recv_degree.clip(1, None)
       )[..., None]
 
-    node_features = segment_sum(send_edges, receivers, num_nodes)
+    updated_node_features = segment_sum(send_edges, receivers, num_nodes)
 
     # Update graph and return
-    graph.update(node_features=node_features)
+    graph.update(node_features=updated_node_features)
     return graph

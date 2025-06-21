@@ -120,8 +120,8 @@ class PGAT(nn.Module):
     )
 
     # Multi-head attention
-    query = rearrange(query, '... m (h d) -> ... m h d', h=self.num_heads)
-    key = rearrange(key, '... n (h d) -> ... n h d', h=self.num_heads)
+    query = rearrange(query, '... (h d) -> ... h d', h=self.num_heads)
+    key = rearrange(key, '... (h d) -> ... h d', h=self.num_heads)
     # Logits
     x = mish(jnp.expand_dims(query, axis=-3) + jnp.expand_dims(key, axis=-4))
     a = self.param(
@@ -129,7 +129,7 @@ class PGAT(nn.Module):
         self.kernel_init,
         (self.num_heads, self.embed_dim // self.num_heads)
     )
-    logits = jnp.einsum('h d, ... m n h d -> ... m n h', a, x)
+    logits = jnp.einsum('h d, ... h d -> ... h', a, x)
     # Softmax weights
     logits = jnp.where(mask[..., None], logits, jnp.finfo(key.dtype).min)
     weights = jax.nn.softmax(logits, axis=-2)

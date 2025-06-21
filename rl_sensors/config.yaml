@@ -43,7 +43,6 @@ world_model:
 
 tdmpc2:
   # Planning
-  mpc: True
   horizon: 3
   mppi_iterations: 6
   population_size: 512
@@ -54,11 +53,11 @@ tdmpc2:
   temperature: 0.5
   # Optimization
   batch_size: 256
-  discount: 0.95
+  discount: 0.9
   rho: 0.5
-  consistency_coef: 20
-  reward_coef: 0.1
-  continue_coef: 1.0
-  value_coef: 0.1
+  consistency_loss_scale: 20
+  reward_loss_scale: 0.1
+  value_loss_scale: 0.1
+  continue_loss_scale: 0.0
   entropy_coef: 1e-4
   tau: 0.01

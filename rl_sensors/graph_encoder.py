@@ -11,7 +11,8 @@ from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 from rl_sensors.layers.activation import mish
 from rl_sensors.layers.attention import PGAT
 from rl_sensors.layers.gat import GATv2
-from rl_sensors.layers.gcn import GCN, ResidualGatedGCN
+from rl_sensors.layers.gcn import GCN
+from rl_sensors.layers.gated_gcn import ResidualGatedGCN
 
 
 class GraphEncoder(nn.Module):

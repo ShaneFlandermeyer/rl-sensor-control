@@ -195,7 +195,6 @@ def train(cfg: dict):
     ##############################
     ep_count = np.zeros(env_config.num_envs, dtype=int)
     prev_logged_step = global_step
-    plan = None
     observation, _ = env.reset(seed=cfg.seed)
 
     T = 500
@@ -204,18 +203,21 @@ def train(cfg: dict):
     )
     pbar = tqdm.tqdm(initial=global_step, total=cfg.max_steps)
     done = np.zeros(env_config.num_envs, dtype=bool)
+    plan = None
     for global_step in range(global_step, cfg.max_steps, env_config.num_envs):
       if global_step <= seed_steps:
         action = env.action_space.sample()
       else:
         rng, action_key = jax.random.split(rng)
         action, plan = agent.act(
-            observation,
+            obs=observation,
+            mpc=True,
             prev_plan=plan,
             deterministic=False,
             train=True,
             key=action_key
         )
+        action = np.array(action)
 
       next_observation, reward, terminated, truncated, info = env.step(action)
 

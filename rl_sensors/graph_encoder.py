@@ -11,7 +11,7 @@ from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 from rl_sensors.layers.activation import mish
 from rl_sensors.layers.attention import PGAT
 from rl_sensors.layers.gat import GATv2
-from rl_sensors.layers.gcn import GCN
+from rl_sensors.layers.gcn import GCN, ResidualGatedGCN
 
 
 class GraphEncoder(nn.Module):
@@ -47,6 +47,15 @@ class GraphEncoder(nn.Module):
       ], axis=-1
       )
 
+    node_features = nn.Dense(
+        self.embed_dim, kernel_init=self.kernel_init
+    )(node_features)
+    edge_features = nn.Dense(
+        self.embed_dim, kernel_init=self.kernel_init
+    )(edge_features)
+    # Only have to do this once since edge features aren't updated
+    edge_features = nn.relu(nn.LayerNorm()(edge_features))
+
     ######################
     # Graph Processing
     ######################
@@ -60,21 +69,16 @@ class GraphEncoder(nn.Module):
 
     for i in range(self.num_layers):
       # Layer definitions
-      W_skip = nn.Dense(
-          self.embed_dim, kernel_init=self.kernel_init, name=f'W_skip_{i}'
-      )
       gnn = GCN(
           embed_dim=self.embed_dim,
+          kernel_init=self.kernel_init,
           normalize=True,
           add_self_edges=False,
-          kernel_init=self.kernel_init,
+          residual=True,
       )
-      # Node update
-      skip = W_skip(graph['node_features'])
+      # Graph update
+      graph['node_features'] = nn.relu(nn.LayerNorm()(graph['node_features']))
       graph = gnn(**graph)
-      graph['node_features'] = mish(
-          nn.LayerNorm()(graph['node_features'] + skip)
-      )
 
     ######################
     # Decode
@@ -94,7 +98,7 @@ class GraphEncoder(nn.Module):
         query_mask=None,
         key_mask=node_mask
     )
-    x = mish(nn.LayerNorm()(x))
+    x = nn.relu(nn.LayerNorm()(x))
     x = rearrange(x, '... n d -> ... (n d)')
 
     return x
@@ -104,10 +108,10 @@ if __name__ == '__main__':
   env = gym.vector.SyncVectorEnv(
       [lambda: GraphSearchTrackEnv() for _ in range(1)])
   obs, _ = env.reset(seed=0)
-  for i in range(0):
+  for i in range(30):
     obs = env.step(env.action_space.sample())[0]
 
-  embed_dim = 160
+  embed_dim = 128
   latent_dim = 512
   num_layers = 3
   num_heads = 4
@@ -116,11 +120,11 @@ if __name__ == '__main__':
           embed_dim=embed_dim,
           num_layers=num_layers,
           num_heads=num_heads,
+          kernel_init=nn.initializers.truncated_normal(stddev=0.02)
       ),
       nn.Dense(latent_dim)
-        # NormedLinear(latent_dim, activation=mish),
+      # NormedLinear(latent_dim, activation=mish),
   ])
 
   model.init(jax.random.PRNGKey(0), obs)
   print(model.tabulate(jax.random.key(0), obs, compute_flops=True))
-

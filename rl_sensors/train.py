@@ -185,7 +185,7 @@ def train(cfg: dict):
           args=ocp.args.Composite(
               agent=ocp.args.StandardSave(agent),
               global_step=ocp.args.JsonSave(global_step),
-              buffer_state=ocp.args.StandardSave(replay_buffer.get_state()),
+              # buffer_state=ocp.args.StandardSave(replay_buffer.get_state()),
           ),
       )
       mngr.wait_until_finished()
@@ -294,7 +294,7 @@ def train(cfg: dict):
             args=ocp.args.Composite(
                 agent=ocp.args.StandardSave(agent),
                 global_step=ocp.args.JsonSave(global_step),
-                buffer_state=ocp.args.StandardSave(replay_buffer.get_state()),
+                # buffer_state=ocp.args.StandardSave(replay_buffer.get_state()),
             ),
         )
 

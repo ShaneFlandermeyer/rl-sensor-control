@@ -13,7 +13,6 @@ class GCN(nn.Module):
   embed_dim: int
   normalize: bool = True
   add_self_edges: bool = False
-  residual: bool = False
   kernel_init: Callable = nn.initializers.xavier_normal()
 
   @nn.compact
@@ -24,13 +23,6 @@ class GCN(nn.Module):
                edge_features: Optional[jax.Array] = None,
                global_features: Optional[jax.Array] = None,
                ) -> jax.Array:
-    graph = dict(
-        node_features=node_features,
-        senders=senders,
-        receivers=receivers,
-        edge_features=edge_features,
-        global_features=global_features,
-    )
     batch_dims = node_features.shape[:-2]
     num_nodes = node_features.shape[-2]
 
@@ -41,12 +33,8 @@ class GCN(nn.Module):
     ####################################
     # Node/edge update
     ####################################
-    if self.residual:
-      W = nn.Dense(2*self.embed_dim, name='W', kernel_init=self.kernel_init)
-      h, skip = jnp.split(W(node_features), 2, axis=-1)
-    else:
-      W = nn.Dense(self.embed_dim, name='W', kernel_init=self.kernel_init)
-      h, skip = W(node_features), None
+    W = nn.Dense(self.embed_dim, name='W', kernel_init=self.kernel_init)
+    h = W(node_features)
 
     send_edges = jnp.take_along_axis(h, senders[..., None], axis=-2)
     if edge_features is not None:
@@ -56,26 +44,32 @@ class GCN(nn.Module):
     if self.add_self_edges:
       send_edges = jnp.concatenate([send_edges, h], axis=-2)
       node_inds = jnp.tile(jnp.arange(num_nodes), [*batch_dims, 1])
-      senders = jnp.concatenate([senders, node_inds], axis=-1)
-      receivers = jnp.concatenate([receivers, node_inds], axis=-1)
+      senders_ = jnp.concatenate([senders, node_inds], axis=-1)
+      receivers_ = jnp.concatenate([receivers, node_inds], axis=-1)
+    else:
+      senders_ = senders
+      receivers_ = receivers
 
     #####################################
     # Aggregate edges
     #####################################
     if self.normalize:
       in_degree = segment_sum(
-          jnp.ones_like(receivers), receivers, num_nodes
+          jnp.ones_like(receivers_), receivers_, num_nodes
       ).astype(float)
-      send_degree = jnp.take_along_axis(in_degree, senders, axis=-1)
-      recv_degree = jnp.take_along_axis(in_degree, receivers, axis=-1)
+      send_degree = jnp.take_along_axis(in_degree, senders_, axis=-1)
+      recv_degree = jnp.take_along_axis(in_degree, receivers_, axis=-1)
       send_edges *= jax.lax.rsqrt(
           send_degree.clip(1, None) * recv_degree.clip(1, None)
       )[..., None]
 
-    updated_node_features = segment_sum(send_edges, receivers, num_nodes)
-    if self.residual:
-      updated_node_features = updated_node_features + skip
+    nodes = segment_sum(send_edges, receivers_, num_nodes)
 
     # Update graph and return
-    graph.update(node_features=updated_node_features)
-    return graph
+    return dict(
+        node_features=nodes,
+        senders=senders,
+        receivers=receivers,
+        edge_features=edge_features,
+        global_features=global_features,
+    )

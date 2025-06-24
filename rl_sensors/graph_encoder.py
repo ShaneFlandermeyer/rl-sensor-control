@@ -37,14 +37,11 @@ class GraphEncoder(nn.Module):
     senders = jnp.where(edge_mask, senders, -1)
     receivers = jnp.where(edge_mask, receivers, -1)
 
-    batch_dims = node_features.shape[:-2]
-    num_nodes = node_features.shape[-2]
-
     # Add global features to node representation
     if global_features is not None:
       node_features = jnp.concatenate([
           node_features,
-          global_features.repeat(num_nodes, axis=-2),
+          global_features.repeat(node_features.shape[-2], axis=-2),
       ], axis=-1
       )
 
@@ -74,12 +71,13 @@ class GraphEncoder(nn.Module):
           embed_dim=self.embed_dim,
           kernel_init=self.kernel_init,
           normalize=True,
-          add_self_edges=False,
-          residual=True,
+          add_self_edges=True,
       )
       # Graph update
+      skip = graph['node_features']
       graph['node_features'] = nn.relu(nn.LayerNorm()(graph['node_features']))
       graph = gnn(**graph)
+      graph['node_features'] = graph['node_features'] + skip
 
     ######################
     # Decode

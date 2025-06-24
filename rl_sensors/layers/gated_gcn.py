@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 from typing import Callable, Optional
 
+
 class ResidualGatedGCN(nn.Module):
   embed_dim: int
   share_kv: bool = False
@@ -16,13 +17,6 @@ class ResidualGatedGCN(nn.Module):
                edge_features: Optional[jax.Array] = None,
                global_features: Optional[jax.Array] = None,
                ) -> jax.Array:
-    graph = dict(
-        node_features=node_features,
-        senders=senders,
-        receivers=receivers,
-        edge_features=edge_features,
-        global_features=global_features,
-    )
     batch_dims = node_features.shape[:-2]
     num_nodes = node_features.shape[-2]
 
@@ -36,26 +30,31 @@ class ResidualGatedGCN(nn.Module):
     if self.share_kv:
       W = nn.Dense(3*self.embed_dim, name='W', kernel_init=self.kernel_init)
       h, Q, KV = jnp.split(W(node_features), 3, axis=-1)
-      K = V = KV
+      key_edges = value_edges = jnp.take_along_axis(
+          KV, senders[..., None], axis=-2
+      )
     else:
       W = nn.Dense(4*self.embed_dim, name='W', kernel_init=self.kernel_init)
       h, Q, K, V = jnp.split(W(node_features), 4, axis=-1)
-
+      key_edges = jnp.take_along_axis(K, senders[..., None], axis=-2)
+      value_edges = jnp.take_along_axis(V, senders[..., None], axis=-2)
     query_edges = jnp.take_along_axis(Q, receivers[..., None], axis=-2)
-    key_edges = jnp.take_along_axis(K, senders[..., None], axis=-2)
-    value_edges = jnp.take_along_axis(V, senders[..., None], axis=-2)
 
-    if edge_features is not None:
-      W_e = nn.Dense(self.embed_dim, name='W_e', kernel_init=self.kernel_init)
-      key_edges = key_edges + W_e(edge_features)
     #####################################
     # Aggregate edges
     #####################################
-    eta = jax.nn.sigmoid(query_edges + key_edges)
-
-    updated_node_features = h + \
-        segment_sum(eta * value_edges, receivers, num_nodes)
+    edges = query_edges + key_edges
+    if edge_features is not None:
+      W_e = nn.Dense(self.embed_dim, name='W_e', kernel_init=self.kernel_init)
+      edges = edges + W_e(edge_features)
+    eta = jax.nn.sigmoid(edges)
+    nodes = h + segment_sum(eta * value_edges, receivers, num_nodes)
 
     # Update graph and return
-    graph.update(node_features=updated_node_features)
-    return graph
+    return dict(
+        node_features=nodes,
+        senders=senders,
+        receivers=receivers,
+        edge_features=edges,
+        global_features=global_features,
+    )

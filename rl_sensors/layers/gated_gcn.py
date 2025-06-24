@@ -40,14 +40,17 @@ class ResidualGatedGCN(nn.Module):
       value_edges = jnp.take_along_axis(V, senders[..., None], axis=-2)
     query_edges = jnp.take_along_axis(Q, receivers[..., None], axis=-2)
 
-    #####################################
-    # Aggregate edges
-    #####################################
     edges = query_edges + key_edges
     if edge_features is not None:
       W_e = nn.Dense(self.embed_dim, name='W_e', kernel_init=self.kernel_init)
       edges = edges + W_e(edge_features)
+
+    #####################################
+    # Aggregate edges
+    #####################################
     eta = jax.nn.sigmoid(edges)
+    eta_sum = segment_sum(eta, receivers, num_nodes)
+    eta /= jnp.take_along_axis(eta_sum, receivers[..., None], axis=-2) + 1e-6
     nodes = h + segment_sum(eta * value_edges, receivers, num_nodes)
 
     # Update graph and return

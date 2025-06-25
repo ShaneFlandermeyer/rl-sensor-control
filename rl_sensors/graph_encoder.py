@@ -10,7 +10,7 @@ from einops import rearrange
 from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 from rl_sensors.layers.activation import mish
 from rl_sensors.layers.attention import PGAT
-from rl_sensors.layers.gat import GATv2
+from rl_sensors.layers.sage import GraphSAGE
 from rl_sensors.layers.gcn import GCN
 from rl_sensors.layers.gated_gcn import ResidualGatedGCN
 
@@ -67,17 +67,13 @@ class GraphEncoder(nn.Module):
 
     for i in range(self.num_layers):
       # Layer definitions
-      gnn = GCN(
+      gnn = GraphSAGE(
           embed_dim=self.embed_dim,
           kernel_init=self.kernel_init,
-          normalize=True,
-          add_self_edges=True,
       )
       # Graph update
-      skip = graph['node_features']
       graph['node_features'] = nn.relu(nn.LayerNorm()(graph['node_features']))
       graph = gnn(**graph)
-      graph['node_features'] = graph['node_features'] + skip
 
     ######################
     # Decode

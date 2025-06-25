@@ -4,26 +4,6 @@ from typing import *
 import jax
 import jax.numpy as jnp
 
-
-def segment_sum(
-  data: jax.Array, 
-  segment_ids: jax.Array, 
-  num_segments: int
-  ) -> jax.Array:
-  """Vectorized segment sum"""
-  batch_dims = data.shape[:-2]
-  sum_fn = jax.ops.segment_sum
-  for _ in range(len(batch_dims)):
-    sum_fn = jax.vmap(sum_fn, in_axes=(0, 0, None))
-  return sum_fn(data, segment_ids, num_segments)
-
-
-# As of 04/2020 pytype doesn't support recursive types.
-# pytype: disable=not-supported-yet
-ArrayTree = Union[jnp.ndarray,
-                  Iterable['ArrayTree'], Mapping[Any, 'ArrayTree']]
-
-
 def _replace_empty_segments_with_constant(aggregated_segments: jnp.ndarray,
                                           segment_ids: jnp.ndarray,
                                           num_segments: Optional[int] = None,
@@ -82,7 +62,7 @@ def segment_softmax(logits: jnp.ndarray,
                     segment_ids: jnp.ndarray,
                     num_segments: Optional[int] = None,
                     indices_are_sorted: bool = False,
-                    unique_indices: bool = False) -> ArrayTree:
+                    unique_indices: bool = False) -> jax.Array:
   """Computes a segment-wise softmax.
 
   For a given tree of logits that can be divded into segments, computes a

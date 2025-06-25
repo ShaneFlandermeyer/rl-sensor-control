@@ -2,7 +2,6 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 from typing import Callable, Optional
-from rl_sensors.layers.segment_util import segment_sum
 
 
 class GraphSAGE(nn.Module):
@@ -22,7 +21,12 @@ class GraphSAGE(nn.Module):
                edge_features: Optional[jax.Array] = None,
                global_features: Optional[jax.Array] = None,
                ) -> jax.Array:
+    batch_dims = node_features.shape[:-2]
     num_nodes = node_features.shape[-2]
+
+    segment_sum = jax.ops.segment_sum
+    for _ in range(len(batch_dims)):
+      segment_sum = jax.vmap(segment_sum, in_axes=(0, 0, None))
 
     ####################################
     # Node/edge update
@@ -38,8 +42,8 @@ class GraphSAGE(nn.Module):
     # Aggregate edges
     #####################################
     in_degree = segment_sum(jnp.ones_like(receivers), receivers, num_nodes)
-    recv_degree = jnp.take_along_axis(in_degree, receivers, axis=-1)[..., None]
-    xji /= recv_degree.astype(float).clip(1, None)
+    recv_degree = jnp.take_along_axis(in_degree, receivers, axis=-1)
+    xji /= recv_degree.astype(float).clip(1, None)[..., None]
 
     nodes = xi + segment_sum(xji, receivers, num_nodes)
 

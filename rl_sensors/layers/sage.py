@@ -32,22 +32,20 @@ class GraphSAGE(nn.Module):
     # Node/edge update
     ####################################
     W = nn.Dense(2*self.embed_dim, name='W', kernel_init=self.kernel_init)
-    h_self, h = jnp.split(W(node_features), 2, axis=-1)
-    send_edges = jnp.take_along_axis(h, senders[..., None], axis=-2)
+    xi, xj = jnp.split(W(node_features), 2, axis=-1)
+    xji = jnp.take_along_axis(xj, senders[..., None], axis=-2)
     if edge_features is not None:
       W_e = nn.Dense(self.embed_dim, name='W_e', kernel_init=self.kernel_init)
-      send_edges = send_edges + W_e(edge_features)
+      xji = xji + W_e(edge_features)
 
     #####################################
     # Aggregate edges
     #####################################
-    in_degree = segment_sum(
-        jnp.ones_like(receivers), receivers, num_nodes
-    ).astype(float)
-    recv_degree = jnp.take_along_axis(in_degree, receivers, axis=-1)
-    send_edges *= recv_degree.clip(1, None)[..., None]
+    in_degree = segment_sum(jnp.ones_like(receivers), receivers, num_nodes)
+    recv_degree = jnp.take_along_axis(in_degree, receivers, axis=-1)[..., None]
+    xji *= recv_degree.astype(float).clip(1, None)
 
-    nodes = h_self + segment_sum(send_edges, receivers, num_nodes)
+    nodes = xi + segment_sum(xji, receivers, num_nodes)
 
     # Update graph and return
     return dict(

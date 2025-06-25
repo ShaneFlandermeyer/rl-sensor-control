@@ -34,15 +34,15 @@ class GCN(nn.Module):
     # Node/edge update
     ####################################
     W = nn.Dense(self.embed_dim, name='W', kernel_init=self.kernel_init)
-    h = W(node_features)
+    x = W(node_features)
 
-    send_edges = jnp.take_along_axis(h, senders[..., None], axis=-2)
+    xji = jnp.take_along_axis(x, senders[..., None], axis=-2)
     if edge_features is not None:
       W_e = nn.Dense(self.embed_dim, name='W_e', kernel_init=self.kernel_init)
-      send_edges = send_edges + W_e(edge_features)
+      xji = xji + W_e(edge_features)
 
     if self.add_self_edges:
-      send_edges = jnp.concatenate([send_edges, h], axis=-2)
+      xji = jnp.concatenate([xji, x], axis=-2)
       node_inds = jnp.tile(jnp.arange(num_nodes), [*batch_dims, 1])
       senders_ = jnp.concatenate([senders, node_inds], axis=-1)
       receivers_ = jnp.concatenate([receivers, node_inds], axis=-1)
@@ -59,11 +59,11 @@ class GCN(nn.Module):
       ).astype(float)
       send_degree = jnp.take_along_axis(in_degree, senders_, axis=-1)
       recv_degree = jnp.take_along_axis(in_degree, receivers_, axis=-1)
-      send_edges *= jax.lax.rsqrt(
+      xji *= jax.lax.rsqrt(
           send_degree.clip(1, None) * recv_degree.clip(1, None)
       )[..., None]
 
-    nodes = segment_sum(send_edges, receivers_, num_nodes)
+    nodes = segment_sum(xji, receivers_, num_nodes)
 
     # Update graph and return
     return dict(

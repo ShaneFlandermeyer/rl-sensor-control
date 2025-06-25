@@ -39,7 +39,7 @@ class GraphSAGE(nn.Module):
     #####################################
     in_degree = segment_sum(jnp.ones_like(receivers), receivers, num_nodes)
     recv_degree = jnp.take_along_axis(in_degree, receivers, axis=-1)[..., None]
-    xji *= recv_degree.astype(float).clip(1, None)
+    xji /= recv_degree.astype(float).clip(1, None)
 
     nodes = xi + segment_sum(xji, receivers, num_nodes)
 

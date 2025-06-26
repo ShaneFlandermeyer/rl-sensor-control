@@ -72,8 +72,10 @@ class GraphEncoder(nn.Module):
           kernel_init=self.kernel_init,
       )
       # Graph update
+      skip = graph['node_features']
       graph['node_features'] = nn.relu(nn.LayerNorm()(graph['node_features']))
       graph = gnn(**graph)
+      graph['node_features'] = graph['node_features'] + skip
 
     ######################
     # Decode

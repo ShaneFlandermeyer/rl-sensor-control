@@ -56,7 +56,7 @@ class GraphSearchTrackEnv(gym.Env):
         edge_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_edges, 5),
+            shape=(self.max_edges, 9),
             dtype=np.float64,
         ),
         edge_list=gym.spaces.MultiDiscrete(
@@ -67,7 +67,7 @@ class GraphSearchTrackEnv(gym.Env):
         global_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(1, 6),
+            shape=(1, 5),
             dtype=np.float64,
         ),
         node_features=gym.spaces.Box(
@@ -344,6 +344,8 @@ class GraphSearchTrackEnv(gym.Env):
         pd=[],
         distance=[],
         angle=[],
+        relative_position=[],
+        relative_velocity=[],
     )
     # Agent transition edge
     if self.timestep > 0:
@@ -355,29 +357,19 @@ class GraphSearchTrackEnv(gym.Env):
           (last_agent['name'], current_agent_node['name']),
           (current_agent_node['name'], last_agent['name']),
       ])
-
-      agent_edge_dist = np.linalg.norm(
-          np.array(current_agent_node['position']) -
-          np.array(last_agent['position']),
-      )
-      if agent_edge_dist > 1e-6:
-        agent_edge_angles = [
-            np.arctan2(
-                last_agent['position'][1] - current_agent_node['position'][1],
-                last_agent['position'][0] - current_agent_node['position'][0]
-            ),
-            np.arctan2(
-                current_agent_node['position'][1] - last_agent['position'][1],
-                current_agent_node['position'][0] - last_agent['position'][0]
-            )
-        ]
-      else:
-        agent_edge_angles = [0, 0]
       agent_edge_attributes.update(
-          type=agent_edge_attributes['type'] + 2*['transition'],
-          pd=agent_edge_attributes['pd'] + 2*[0.0],
-          distance=agent_edge_attributes['distance'] + 2*[agent_edge_dist],
-          angle=agent_edge_attributes['angle'] + agent_edge_angles,
+          type=agent_edge_attributes['type'] + ['transition', 'transition'],
+          pd=agent_edge_attributes['pd'] + [0.0, 0.0],
+          distance=agent_edge_attributes['distance'] + [0.0, 0.0],
+          angle=agent_edge_attributes['angle'] + [0.0, 0.0],
+          relative_position=agent_edge_attributes['relative_position'] + [
+              last_agent['position'] - current_agent_node['position'],
+              current_agent_node['position'] - last_agent['position'],
+          ],
+          relative_velocity=agent_edge_attributes['relative_velocity'] + [
+              last_agent['velocity'] - current_agent_node['velocity'],
+              current_agent_node['velocity'] - last_agent['velocity'],
+          ],
       )
 
     # Search detection edges
@@ -391,6 +383,7 @@ class GraphSearchTrackEnv(gym.Env):
       )
       detected_search = np.where(search_pd > 0)[0]
       num_search_updates = min(len(detected_search), self.top_k_search_update)
+      num_search_edges = 2 * num_search_updates
       if num_search_updates > 0:
         detected_search = detected_search[
             np.argpartition(
@@ -403,16 +396,16 @@ class GraphSearchTrackEnv(gym.Env):
         search_edge_dist = np.linalg.norm(
             search_pos[detected_search] - self.sensor['position'], axis=-1
         ).tolist()
-        search_edge_angles = np.concatenate([
+        search_edge_angles = (
             np.arctan2(
                 search_pos[detected_search, 1] - self.sensor['position'][1],
                 search_pos[detected_search, 0] - self.sensor['position'][0]
-            ),
+            ).tolist() +
             np.arctan2(
                 self.sensor['position'][1] - search_pos[detected_search, 1],
                 self.sensor['position'][0] - search_pos[detected_search, 0]
-            )
-        ]).tolist()
+            ).tolist()
+        )
 
         agent_edges.extend([
             (search_nodes[i]['name'], current_agent_node['name'])
@@ -422,11 +415,14 @@ class GraphSearchTrackEnv(gym.Env):
             for i in detected_search
         ])
         agent_edge_attributes.update(
-            type=agent_edge_attributes['type'] +
-            2*num_search_updates*['update'],
+            type=agent_edge_attributes['type'] + num_search_edges*['update'],
             pd=agent_edge_attributes['pd'] + 2*search_edge_pd,
             distance=agent_edge_attributes['distance'] + 2*search_edge_dist,
             angle=agent_edge_attributes['angle'] + search_edge_angles,
+            relative_position=agent_edge_attributes['relative_position'] +
+            num_search_edges*[np.zeros(2)],
+            relative_velocity=agent_edge_attributes['relative_velocity'] +
+            num_search_edges*[np.zeros(2)],
         )
 
     self.graph.add_vertex(**current_agent_node)
@@ -481,6 +477,8 @@ class GraphSearchTrackEnv(gym.Env):
           pd=[],
           distance=[],
           angle=[],
+          relative_position=[],
+          relative_velocity=[],
       )
       track_edges = []
       for i, meta in enumerate(self.tracker.mb_metadata):
@@ -520,34 +518,27 @@ class GraphSearchTrackEnv(gym.Env):
         track_updates = track_history(measurement_type_eq='update')
         if len(track_updates) > 0:
           last_update = track_updates[-1]
-          last_update_pos = np.array(last_update['position'])
-          track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
-          track_transition_dist = np.linalg.norm(track_pos - last_update_pos)
-          if track_transition_dist > 1e-6:
-            track_transition_angles = [
-                np.arctan2(
-                    last_update_pos[1] - track_pos[1],
-                    last_update_pos[0] - track_pos[0]
-                ),
-                np.arctan2(
-                    track_pos[1] - last_update_pos[1],
-                    track_pos[0] - last_update_pos[0]
-                )
-            ]
-          else:
-            # Handle angle weirdness at zero distances
-            track_transition_angles = [0, 0]
+          track_pos = track_node_attributes['position'][i]
+          track_vel = track_node_attributes['velocity'][i]
 
           track_edges.extend([
               (last_update['name'], track_node_name),
               (track_node_name, last_update['name'])
           ])
           track_edge_attributes.update(
-              type=track_edge_attributes['type'] + 2*['transition'],
-              pd=track_edge_attributes['pd'] + 2*[0.0],
-              distance=track_edge_attributes['distance'] +
-              2*[track_transition_dist],
-              angle=track_edge_attributes['angle'] + track_transition_angles,
+              type=track_edge_attributes['type'] +
+              ['transition', 'transition'],
+              pd=track_edge_attributes['pd'] + [0.0, 0.0],
+              distance=track_edge_attributes['distance'] + [0.0, 0.0],
+              angle=track_edge_attributes['angle'] + [0.0, 0.0],
+              relative_position=track_edge_attributes['relative_position'] + [
+                  last_update['position'] - track_pos,
+                  track_pos - last_update['position'],
+              ],
+              relative_velocity=track_edge_attributes['relative_velocity'] + [
+                  last_update['velocity'] - track_vel,
+                  track_vel - last_update['velocity'],
+              ],
           )
 
         # Measurement update/miss edge
@@ -573,6 +564,10 @@ class GraphSearchTrackEnv(gym.Env):
             pd=track_edge_attributes['pd'] + 2*[track_pd],
             distance=track_edge_attributes['distance'] + 2*[track_update_dist],
             angle=track_edge_attributes['angle'] + track_update_angles,
+            relative_position=track_edge_attributes['relative_position'] +
+            2*[np.zeros(2)],
+            relative_velocity=track_edge_attributes['relative_velocity'] +
+            2*[np.zeros(2)],
         )
 
         # Track graph pruning
@@ -695,9 +690,13 @@ class GraphSearchTrackEnv(gym.Env):
     if len(edges) > 0:
       edge_keys = [
           'type',
+          # Measurement features
           'pd',
           'distance',
           'angle',
+          # Transition features
+          'relative_position',
+          'relative_velocity',
       ]
       edge_dict = {
           k: np.array(edges[k]).reshape((len(edges), -1)) for k in edge_keys
@@ -709,6 +708,10 @@ class GraphSearchTrackEnv(gym.Env):
           ),
           distance=edge_dict['distance'] / distance_scale,
           angle=edge_dict['angle'] / np.pi,
+          relative_position=edge_dict['relative_position'] /
+          (self.scenario['max_velocity'] * self.scenario['dt']),
+          relative_velocity=edge_dict['relative_velocity'] /
+          self.scenario['max_velocity'],
       )
       edge_features = np.concatenate(
           [
@@ -750,7 +753,6 @@ class GraphSearchTrackEnv(gym.Env):
     ###########################
     # Search state
     w_sum = np.sum(self.tracker.poisson.state.weight, keepdims=True)
-    w_max = np.max(self.tracker.poisson.state.weight, keepdims=True)
 
     # Track state
     if len(self.tracker.mb) > 0:
@@ -773,7 +775,6 @@ class GraphSearchTrackEnv(gym.Env):
 
     global_features = np.stack([
         w_sum,
-        np.log(w_max + 1e-10),
         np.array([num_active_tracks]),
         np.array([track_qualities.mean()]),
         np.array([track_qualities.min()]),

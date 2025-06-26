@@ -20,6 +20,7 @@ class GraphEncoder(nn.Module):
   num_layers: int
   num_heads: int
   kernel_init: Callable = nn.initializers.xavier_normal()
+  dtype: jnp.dtype = jnp.float32
 
   @nn.compact
   def __call__(self, input: Dict[str, Any]):
@@ -46,10 +47,10 @@ class GraphEncoder(nn.Module):
       )
 
     node_features = nn.Dense(
-        self.embed_dim, kernel_init=self.kernel_init
+        self.embed_dim, kernel_init=self.kernel_init, dtype=self.dtype
     )(node_features)
     edge_features = nn.Dense(
-        self.embed_dim, kernel_init=self.kernel_init
+        self.embed_dim, kernel_init=self.kernel_init, dtype=self.dtype
     )(edge_features)
     # Only have to do this once since edge features aren't updated
     edge_features = nn.relu(nn.LayerNorm()(edge_features))
@@ -70,6 +71,7 @@ class GraphEncoder(nn.Module):
       gnn = GraphSAGE(
           embed_dim=self.embed_dim,
           kernel_init=self.kernel_init,
+          dtype=self.dtype
       )
       # Graph update
       skip = graph['node_features']
@@ -86,9 +88,10 @@ class GraphEncoder(nn.Module):
     x = PGAT(
         embed_dim=self.embed_dim,
         num_heads=self.num_heads,
-        kernel_init=self.kernel_init,
         normalize_inputs=True,
         residual=True,
+        kernel_init=self.kernel_init,
+        dtype=self.dtype,
     )(
         query=current_agent_node,
         key=graph['node_features'],
@@ -117,7 +120,7 @@ if __name__ == '__main__':
           embed_dim=embed_dim,
           num_layers=num_layers,
           num_heads=num_heads,
-          kernel_init=nn.initializers.truncated_normal(stddev=0.02)
+          kernel_init=nn.initializers.truncated_normal(stddev=0.02),
       ),
       nn.Dense(latent_dim)
       # NormedLinear(latent_dim, activation=mish),

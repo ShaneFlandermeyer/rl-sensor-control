@@ -12,6 +12,7 @@ class GraphSAGE(nn.Module):
   """
   embed_dim: int
   kernel_init: Callable = nn.initializers.xavier_normal()
+  dtype: jnp.dtype = jnp.float32
 
   @nn.compact
   def __call__(self,
@@ -31,11 +32,21 @@ class GraphSAGE(nn.Module):
     ####################################
     # Node/edge update
     ####################################
-    W = nn.Dense(2*self.embed_dim, name='W', kernel_init=self.kernel_init)
+    W = nn.Dense(
+        2*self.embed_dim,
+        name='W',
+        kernel_init=self.kernel_init,
+        dtype=self.dtype
+    )
     xi, xj = jnp.split(W(node_features), 2, axis=-1)
     xji = jnp.take_along_axis(xj, senders[..., None], axis=-2)
     if edge_features is not None:
-      W_e = nn.Dense(self.embed_dim, name='W_e', kernel_init=self.kernel_init)
+      W_e = nn.Dense(
+          self.embed_dim,
+          name='W_e',
+          kernel_init=self.kernel_init,
+          dtype=self.dtype
+      )
       xji = xji + W_e(edge_features)
 
     #####################################

@@ -53,7 +53,7 @@ tdmpc2:
   temperature: 0.5
   # Optimization
   batch_size: 256
-  discount: 0.9
+  discount: 0.95
   rho: 0.5
   consistency_loss_scale: 20
   reward_loss_scale: 0.1

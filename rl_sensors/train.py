@@ -85,7 +85,6 @@ def train(cfg: dict):
   ##############################
   # Agent setup
   ##############################
-  dtype = jnp.dtype(model_config.dtype)
   rng, model_key, encoder_key = jax.random.split(rng, 3)
   encoder_module = nn.Sequential([
       GraphEncoder(
@@ -93,8 +92,11 @@ def train(cfg: dict):
           num_layers=encoder_config.num_layers,
           num_heads=encoder_config.num_heads,
           kernel_init=nn.initializers.truncated_normal(0.02),
+          dtype=encoder_config.dtype,
       ),
-      NormedLinear(model_config.latent_dim, activation=None, dtype=dtype)
+      NormedLinear(
+          model_config.latent_dim, activation=None, dtype=encoder_config.dtype
+      ),
   ]
   )
 

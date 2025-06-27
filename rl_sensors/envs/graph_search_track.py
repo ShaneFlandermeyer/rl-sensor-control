@@ -61,7 +61,7 @@ class GraphSearchTrackEnv(gym.Env):
             low=-np.inf,
             high=np.inf,
             shape=(self.max_edges, 9),
-            dtype=np.float64,
+            dtype=np.float32,
         ),
         edge_list=gym.spaces.MultiDiscrete(
             np.full((self.max_edges, 2), self.max_nodes+1),
@@ -72,13 +72,13 @@ class GraphSearchTrackEnv(gym.Env):
             low=-np.inf,
             high=np.inf,
             shape=(1, 5),
-            dtype=np.float64,
+            dtype=np.float32,
         ),
         node_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
             shape=(self.max_nodes, 20),
-            dtype=np.float64,
+            dtype=np.float32,
         ),
         node_mask=gym.spaces.MultiBinary(self.max_nodes),
     )
@@ -760,11 +760,11 @@ class GraphSearchTrackEnv(gym.Env):
 
     obs = dict(
         current_agent_node_ind=current_agent_node_ind,
-        edge_features=symlog(edge_features).astype(np.float64),
+        edge_features=symlog(edge_features).astype(np.float32),
         edge_list=edge_list,
         edge_mask=edge_mask,
-        global_features=symlog(global_features).astype(np.float64),
-        node_features=symlog(node_features).astype(np.float64),
+        global_features=symlog(global_features).astype(np.float32),
+        node_features=symlog(node_features).astype(np.float32),
         node_mask=node_mask,
     )
     return obs

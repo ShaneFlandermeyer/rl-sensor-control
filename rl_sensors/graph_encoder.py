@@ -8,11 +8,8 @@ import jax.numpy as jnp
 from einops import rearrange
 
 from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
-from rl_sensors.layers.activation import mish
 from rl_sensors.layers.attention import PGAT
 from rl_sensors.layers.sage import GraphSAGE
-from rl_sensors.layers.gcn import GCN
-from rl_sensors.layers.gated_gcn import ResidualGatedGCN
 
 
 class GraphEncoder(nn.Module):
@@ -52,6 +49,7 @@ class GraphEncoder(nn.Module):
     edge_features = nn.Dense(
         self.embed_dim, kernel_init=self.kernel_init, dtype=self.dtype
     )(edge_features)
+
     # Only have to do this once since edge features aren't updated
     edge_features = nn.relu(nn.LayerNorm()(edge_features))
 
@@ -121,10 +119,20 @@ if __name__ == '__main__':
           num_layers=num_layers,
           num_heads=num_heads,
           kernel_init=nn.initializers.truncated_normal(stddev=0.02),
+          dtype=jnp.bfloat16,
       ),
       nn.Dense(latent_dim)
       # NormedLinear(latent_dim, activation=mish),
   ])
 
-  model.init(jax.random.PRNGKey(0), obs)
-  print(model.tabulate(jax.random.key(0), obs, compute_flops=True))
+  params = model.init(jax.random.PRNGKey(0), obs)
+  
+  fn = jax.jit(model.apply)
+  fn(params, obs)
+  
+  import time
+  start = time.time()
+  for _ in range(100):
+    fn(params, obs).block_until_ready()
+  print(f'JIT time: {(time.time() - start) / 100:.4f} seconds')
+#   print(model.tabulate(jax.random.key(0), obs, compute_flops=True))

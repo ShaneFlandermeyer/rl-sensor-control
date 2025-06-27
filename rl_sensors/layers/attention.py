@@ -135,15 +135,17 @@ class PGAT(nn.Module):
     key = rearrange(key, '... (h d) -> ... h d', h=self.num_heads)
     # Logits
     x = mish(jnp.expand_dims(query, axis=-3) + jnp.expand_dims(key, axis=-4))
-    a = self.param(
-        'a',
-        self.kernel_init,
-        (self.num_heads, self.embed_dim // self.num_heads),
-    )
-    logits = jnp.einsum('h d, ... h d -> ... h', a.astype(x.dtype), x)
+    logits = nn.Einsum(
+        shape=(self.num_heads, self.embed_dim // self.num_heads),
+        einsum_str='... h d, h d -> ... h',
+        use_bias=False,
+        dtype=self.dtype,
+        kernel_init=self.kernel_init,
+        name='a',
+    )(x)
     # Softmax weights
-    logits = jnp.where(mask[..., None], logits, jnp.finfo(key.dtype).min)
-    weights = jax.nn.softmax(logits, axis=-2)
+    logits = jnp.where(mask[..., None], logits, jnp.finfo(logits.dtype).min)
+    weights = jax.nn.softmax(logits.astype(jnp.float32), axis=-2)
     x = jnp.einsum('... m n h, ... n h d -> ... m h d', weights, key)
 
     x = rearrange(x, '... h d -> ... (h d)', h=self.num_heads)

@@ -53,7 +53,8 @@ class GraphSAGE(nn.Module):
     # Aggregate edges
     #####################################
     in_degree = segment_sum(jnp.ones_like(receivers), receivers, num_nodes)
-    xji /= jnp.take_along_axis(in_degree, receivers, axis=-1)[..., None] + 1e-6
+    edge_scale = jnp.take_along_axis(in_degree, senders, axis=-1)[..., None]
+    xji = xji.astype(jnp.float32) / (edge_scale + 1e-8)
 
     nodes = xi + segment_sum(xji, receivers, num_nodes)
 

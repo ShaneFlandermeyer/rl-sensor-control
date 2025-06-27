@@ -20,6 +20,10 @@ from motpy.rfs.tomb import TOMBP
 from rl_sensors.envs.util import merge_poisson
 
 
+def symlog(x):
+  return np.sign(x) * np.log1p(np.abs(x))
+
+
 class GraphSearchTrackEnv(gym.Env):
   def __init__(self):
     self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,))
@@ -280,6 +284,21 @@ class GraphSearchTrackEnv(gym.Env):
     return obs, reward, terminated, truncated, info
 
   def update_graph(self) -> None:
+    node_label_map = dict(
+        search=[1, 0, 0],
+        agent=[0, 1, 0],
+        track=[0, 0, 1],
+    )
+    edge_label_map = dict(
+        transition=[1, 0],
+        update=[0, 1],
+    )
+    measurement_label_map = dict(
+        predict=[1, 0, 0],
+        update=[0, 1, 0],
+        miss=[0, 0, 1],
+        none=[0, 0, 0],
+    )
     #############################
     # Search nodes
     #############################
@@ -291,14 +310,15 @@ class GraphSearchTrackEnv(gym.Env):
           n=len(self.tracker.poisson),
           attributes=dict(
               type='search',
+              label=[node_label_map['search']],
               name=search_ids,
               id=search_ids,
               timestep=self.timestep,
               position=self.tracker.poisson.state.mean[:, self.pos_inds],
               velocity=self.tracker.poisson.state.mean[:, self.vel_inds],
-              covar_diag=np.diagonal(
+              covar_diag=np.sqrt(np.diagonal(
                   self.tracker.poisson.state.covar, axis1=-1, axis2=-2
-              ),
+              )),
               # Search features
               weight=self.tracker.poisson.state.weight,
               # Agent features
@@ -306,7 +326,8 @@ class GraphSearchTrackEnv(gym.Env):
                   (len(self.tracker.poisson), self.action_space.shape[0])
               ),
               # Track features
-              measurement_type="none",
+              measurement_type='none',
+              measurement_label=[measurement_label_map['none']],
               track_quality=np.zeros(len(self.tracker.poisson)),
               existence_probability=np.zeros(len(self.tracker.poisson)),
               initiation_progress=np.zeros(len(self.tracker.poisson)),
@@ -314,7 +335,8 @@ class GraphSearchTrackEnv(gym.Env):
       )
     else:
       search_nodes = self.graph.vs(type_eq='search')
-      search_nodes['weight'] = self.tracker.poisson.state.weight
+      search_nodes['weight'] = self.tracker.poisson.state.weight / \
+          self.tracker.poisson.state.weight.max()
       search_nodes['timestep'] = self.timestep
 
     ##############################
@@ -322,6 +344,7 @@ class GraphSearchTrackEnv(gym.Env):
     ##############################
     current_agent_node = dict(
         type='agent',
+        label=node_label_map['agent'],
         name=f'agent_t{self.timestep}',
         id='agent',
         timestep=self.timestep,
@@ -333,7 +356,8 @@ class GraphSearchTrackEnv(gym.Env):
         # Agent features
         sensor_action=self.sensor['action'],
         # Track features
-        measurement_type="none",
+        measurement_type='none',
+        measurement_label=measurement_label_map['none'],
         track_quality=0.0,
         existence_probability=0.0,
         initiation_progress=0.0,
@@ -341,6 +365,7 @@ class GraphSearchTrackEnv(gym.Env):
     agent_edges = []
     agent_edge_attributes = dict(
         type=[],
+        label=[],
         pd=[],
         distance=[],
         angle=[],
@@ -359,6 +384,9 @@ class GraphSearchTrackEnv(gym.Env):
       ])
       agent_edge_attributes.update(
           type=agent_edge_attributes['type'] + ['transition', 'transition'],
+          label=agent_edge_attributes['label'] + 2*[
+              edge_label_map['transition']
+          ],
           pd=agent_edge_attributes['pd'] + [0.0, 0.0],
           distance=agent_edge_attributes['distance'] + [0.0, 0.0],
           angle=agent_edge_attributes['angle'] + [0.0, 0.0],
@@ -416,6 +444,9 @@ class GraphSearchTrackEnv(gym.Env):
         ])
         agent_edge_attributes.update(
             type=agent_edge_attributes['type'] + num_search_edges*['update'],
+            label=agent_edge_attributes['label'] + num_search_edges*[
+                edge_label_map['update']
+            ],
             pd=agent_edge_attributes['pd'] + 2*search_edge_pd,
             distance=agent_edge_attributes['distance'] + 2*search_edge_dist,
             angle=agent_edge_attributes['angle'] + search_edge_angles,
@@ -449,6 +480,7 @@ class GraphSearchTrackEnv(gym.Env):
       num_new_track_nodes = min(len(self.tracker.mb), self.max_active_tracks)
       track_node_attributes = dict(
           type='track',
+          label=[node_label_map['track']],
           name=[],
           id=[],
           timestep=self.timestep,
@@ -458,22 +490,24 @@ class GraphSearchTrackEnv(gym.Env):
           velocity=self.tracker.mb.state.mean[
               :self.max_active_tracks, self.vel_inds
           ],
-          covar_diag=np.diagonal(
+          covar_diag=np.sqrt(np.diagonal(
               self.tracker.mb.state.covar[:self.max_active_tracks],
               axis1=-1, axis2=-2
-          ),
+          )),
           # Search features
           weight=np.zeros(num_new_track_nodes),
           # Agent features
           sensor_action=np.zeros((num_new_track_nodes, 1)),
           # Track features
           measurement_type=[],
+          measurement_label=[],
           track_quality=[],
           existence_probability=self.tracker.mb.r[:num_new_track_nodes],
           initiation_progress=[],
       )
       track_edge_attributes = dict(
           type=[],
+          label=[],
           pd=[],
           distance=[],
           angle=[],
@@ -507,6 +541,8 @@ class GraphSearchTrackEnv(gym.Env):
             name=track_node_attributes['name'] + [track_node_name],
             measurement_type=track_node_attributes['measurement_type'] +
             [track_measurement_type],
+            measurement_label=track_node_attributes['measurement_label'] +
+            [measurement_label_map[track_measurement_type]],
             track_quality=track_node_attributes['track_quality'] +
             [track_quality],
             initiation_progress=track_node_attributes['initiation_progress'] +
@@ -528,6 +564,9 @@ class GraphSearchTrackEnv(gym.Env):
           track_edge_attributes.update(
               type=track_edge_attributes['type'] +
               ['transition', 'transition'],
+              label=track_edge_attributes['label'] + 2*[
+                  edge_label_map['transition']
+              ],
               pd=track_edge_attributes['pd'] + [0.0, 0.0],
               distance=track_edge_attributes['distance'] + [0.0, 0.0],
               angle=track_edge_attributes['angle'] + [0.0, 0.0],
@@ -561,6 +600,9 @@ class GraphSearchTrackEnv(gym.Env):
         ])
         track_edge_attributes.update(
             type=track_edge_attributes['type'] + 2*['update'],
+            label=track_edge_attributes['label'] + 2*[
+                edge_label_map['update']
+            ],
             pd=track_edge_attributes['pd'] + 2*[track_pd],
             distance=track_edge_attributes['distance'] + 2*[track_update_dist],
             angle=track_edge_attributes['angle'] + track_update_angles,
@@ -599,29 +641,12 @@ class GraphSearchTrackEnv(gym.Env):
 
   def get_obs(self) -> Dict[str, Any]:
     ###########################
-    # Scale factors
-    ###########################
-    position_scale = 0.5*np.diff(self.scenario['extents'], axis=-1).ravel()
-    distance_scale = np.linalg.norm(position_scale)
-
-    ###########################
     # Nodes
     ###########################
-    node_label_map = dict(
-        search=[1, 0, 0],
-        agent=[0, 1, 0],
-        track=[0, 0, 1],
-    )
-    measurement_type_map = dict(
-        predict=[1, 0, 0],
-        update=[0, 1, 0],
-        miss=[0, 0, 1],
-        none=[0, 0, 0],
-    )
 
     nodes = self.graph.vs
     node_keys = [
-        'type',
+        'label',
         'age',
         'position',
         'velocity',
@@ -631,41 +656,15 @@ class GraphSearchTrackEnv(gym.Env):
         # Agent features
         'sensor_action',
         # Track features
-        'measurement_type',
+        'measurement_label',
         'track_quality',
         'existence_probability',
         'initiation_progress',
     ]
-    node_dict = {
-        k: np.array(nodes[k]).reshape((len(nodes), -1)) for k in node_keys
-    }
-    # Pre-process features
-    node_dict.update(
-        type=np.array(list(
-            map(lambda x: node_label_map[x], node_dict['type'][:, 0])
-        )),
-        age=np.log1p(node_dict['age']),
-        position=node_dict['position'] / position_scale[None, :],
-        velocity=node_dict['velocity'] / self.scenario['max_velocity'],
-        covar_diag=np.log1p(np.sqrt(node_dict['covar_diag'])),
-        # Search features
-        weight=node_dict['weight'] / (node_dict['weight'].max() + 1e-10),
-        # Track features
-        measurement_type=np.array(
-            list(map(
-                lambda x: measurement_type_map[x],
-                node_dict['measurement_type'][:, 0]
-            ))
-        ),
-    )
-
     node_features = np.concatenate(
         [
-            node_dict[key].astype(
-                self.observation_space['node_features'].dtype
-            ) for key in node_keys
-        ],
-        axis=-1
+            np.array(nodes[k]).reshape((len(nodes), -1)) for k in node_keys
+        ], axis=-1
     )
 
     # Pad nodes
@@ -682,14 +681,10 @@ class GraphSearchTrackEnv(gym.Env):
     ###########################
     # Edges
     ###########################
-    edge_label_map = dict(
-        transition=[1, 0],
-        update=[0, 1],
-    )
     edges = self.graph.es
     if len(edges) > 0:
       edge_keys = [
-          'type',
+          'label',
           # Measurement features
           'pd',
           'distance',
@@ -698,28 +693,10 @@ class GraphSearchTrackEnv(gym.Env):
           'relative_position',
           'relative_velocity',
       ]
-      edge_dict = {
-          k: np.array(edges[k]).reshape((len(edges), -1)) for k in edge_keys
-      }
-      # Pre-process features
-      edge_dict.update(
-          type=np.array(
-              list(map(lambda x: edge_label_map[x], edge_dict['type'][:, 0]))
-          ),
-          distance=edge_dict['distance'] / distance_scale,
-          angle=edge_dict['angle'] / np.pi,
-          relative_position=edge_dict['relative_position'] /
-          (self.scenario['max_velocity'] * self.scenario['dt']),
-          relative_velocity=edge_dict['relative_velocity'] /
-          self.scenario['max_velocity'],
-      )
       edge_features = np.concatenate(
           [
-              edge_dict[key].astype(
-                  self.observation_space['edge_features'].dtype
-              ) for key in edge_keys
-          ],
-          axis=-1
+              np.array(edges[k]).reshape((len(edges), -1)) for k in edge_keys
+          ], axis=-1
       )
       edge_list = np.array(self.graph.get_edgelist())
       # Pad edges
@@ -783,11 +760,11 @@ class GraphSearchTrackEnv(gym.Env):
 
     obs = dict(
         current_agent_node_ind=current_agent_node_ind,
-        edge_features=edge_features,
+        edge_features=symlog(edge_features).astype(np.float64),
         edge_list=edge_list,
         edge_mask=edge_mask,
-        global_features=global_features,
-        node_features=node_features,
+        global_features=symlog(global_features).astype(np.float64),
+        node_features=symlog(node_features).astype(np.float64),
         node_mask=node_mask,
     )
     return obs
@@ -986,7 +963,7 @@ class GraphSearchTrackEnv(gym.Env):
           scipy.stats.multivariate_normal.pdf(
               search_grid,
               mean=search_nodes[i]['position'],
-              cov=search_nodes[i]['covar_diag'][self.pos_inds]
+              cov=search_nodes[i]['covar_diag'][self.pos_inds]**2
           ).reshape((nx, ny))
       )
       # Print search weight on the plot

@@ -12,6 +12,10 @@ from rl_sensors.layers.attention import PGAT
 from rl_sensors.layers.sage import GraphSAGE
 
 
+def mish(x: jax.Array) -> jax.Array:
+  return x * jax.nn.tanh(jax.nn.softplus(x))
+
+
 class GraphEncoder(nn.Module):
   embed_dim: int
   num_layers: int
@@ -51,7 +55,7 @@ class GraphEncoder(nn.Module):
     )(edge_features)
 
     # Only have to do this once since edge features aren't updated
-    edge_features = nn.relu(nn.LayerNorm()(edge_features))
+    edge_features = mish(nn.LayerNorm()(edge_features))
 
     ######################
     # Graph Processing
@@ -73,7 +77,7 @@ class GraphEncoder(nn.Module):
       )
       # Graph update
       skip = graph['node_features']
-      graph['node_features'] = nn.relu(nn.LayerNorm()(graph['node_features']))
+      graph['node_features'] = mish(nn.LayerNorm()(graph['node_features']))
       graph = gnn(**graph)
       graph['node_features'] = graph['node_features'] + skip
 
@@ -96,7 +100,7 @@ class GraphEncoder(nn.Module):
         query_mask=None,
         key_mask=node_mask
     )
-    x = nn.relu(nn.LayerNorm()(x))
+    x = mish(nn.LayerNorm()(x))
     x = rearrange(x, '... n d -> ... (n d)')
 
     return x
@@ -126,10 +130,10 @@ if __name__ == '__main__':
   ])
 
   params = model.init(jax.random.PRNGKey(0), obs)
-  
+
   fn = jax.jit(model.apply)
   fn(params, obs)
-  
+
   import time
   start = time.time()
   for _ in range(100):

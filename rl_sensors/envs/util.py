@@ -1,10 +1,12 @@
 import numpy as np
 from motpy.rfs.poisson import Poisson
 from motpy.distributions import Gaussian
+from typing import *
 
 
 def merge_poisson(
     distribution: Poisson,
+    metadata: List[Dict[str, Any]],
     source_inds: np.ndarray,
     target_inds: np.ndarray
 ) -> Poisson:
@@ -20,5 +22,7 @@ def merge_poisson(
       covar=merged_covars,
       weight=merged_weights
   )
+  
+  merged_metadata = [metadata[i] for i in target_inds]
 
-  return Poisson(state=merged_state)
+  return Poisson(state=merged_state), merged_metadata

@@ -233,7 +233,7 @@ def train(cfg: dict):
                 terminated=terminated,
                 truncated=truncated
             ),
-            env_mask=~done
+            mask=~done
         )
       observation = next_observation
 

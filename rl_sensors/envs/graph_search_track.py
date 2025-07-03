@@ -212,8 +212,9 @@ class GraphSearchTrackEnv(gym.Env):
             self.ps, scenario=self.scenario, pos_inds=self.pos_inds
         ),
     )
-    self.tracker.poisson = merge_poisson(
+    self.tracker.poisson, self.tracker.poisson_metadata = merge_poisson(
         distribution=self.tracker.poisson,
+        metadata=self.tracker.poisson_metadata,
         source_inds=np.arange(len(self.tracker.poisson)//2),
         target_inds=np.arange(
             len(self.tracker.poisson)//2, len(self.tracker.poisson)
@@ -404,11 +405,10 @@ class GraphSearchTrackEnv(gym.Env):
     search_nodes = self.graph.vs(type_eq='search')
     search_pos = np.array(search_nodes['position'])
     if self.timestep > 0:
-      search_pd = self.pd(
-          object_state=self.tracker.poisson.state,
-          sensor=self.sensor,
-          pos_inds=self.pos_inds,
-      )
+      search_pd = np.array([
+          self.tracker.poisson_metadata[i]['pd']
+          for i in range(len(search_nodes))
+      ])
       detected_search = np.where(search_pd > 0)[0]
       num_search_updates = min(len(detected_search), self.top_k_search_update)
       num_search_edges = 2 * num_search_updates
@@ -515,6 +515,7 @@ class GraphSearchTrackEnv(gym.Env):
           relative_velocity=[],
       )
       track_edges = []
+      track_nodes = self.graph.vs(type_eq='track')
       for i, meta in enumerate(self.tracker.mb_metadata):
         if i >= self.max_active_tracks:  # At track capacity
           track_history['delete'] = True
@@ -550,7 +551,7 @@ class GraphSearchTrackEnv(gym.Env):
         )
 
         # Transition edge
-        track_history = self.graph.vs(type_eq='track', id_eq=track_id)
+        track_history = track_nodes(id_eq=track_id)
         track_updates = track_history(measurement_type_eq='update')
         if len(track_updates) > 0:
           last_update = track_updates[-1]

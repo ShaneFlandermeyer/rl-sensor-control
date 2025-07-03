@@ -71,7 +71,7 @@ class GraphSearchTrackEnv(gym.Env):
         global_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(1, 5),
+            shape=(1, 3),
             dtype=np.float32,
         ),
         node_features=gym.spaces.Box(
@@ -477,32 +477,28 @@ class GraphSearchTrackEnv(gym.Env):
         self.graph.delete_vertices(stale_track_nodes)
 
       # Collect track info for this timestep
-      num_new_track_nodes = min(len(self.tracker.mb), self.max_active_tracks)
+      num_tracks = min(len(self.tracker.mb), self.max_active_tracks)
       track_node_attributes = dict(
           type='track',
           label=[node_label_map['track']],
           name=[],
           id=[],
           timestep=self.timestep,
-          position=self.tracker.mb.state.mean[
-              :self.max_active_tracks, self.pos_inds
-          ],
-          velocity=self.tracker.mb.state.mean[
-              :self.max_active_tracks, self.vel_inds
-          ],
+          position=self.tracker.mb.state.mean[:num_tracks, self.pos_inds],
+          velocity=self.tracker.mb.state.mean[:num_tracks, self.vel_inds],
           covar_diag=np.sqrt(np.diagonal(
-              self.tracker.mb.state.covar[:self.max_active_tracks],
+              self.tracker.mb.state.covar[:num_tracks],
               axis1=-1, axis2=-2
           )),
           # Search features
-          weight=np.zeros(num_new_track_nodes),
+          weight=np.zeros(num_tracks),
           # Agent features
-          sensor_action=np.zeros((num_new_track_nodes, 1)),
+          sensor_action=np.zeros((num_tracks, 1)),
           # Track features
           measurement_type=[],
           measurement_label=[],
           track_quality=[],
-          existence_probability=self.tracker.mb.r[:num_new_track_nodes],
+          existence_probability=self.tracker.mb.r[:num_tracks],
           initiation_progress=[],
       )
       track_edge_attributes = dict(
@@ -626,7 +622,7 @@ class GraphSearchTrackEnv(gym.Env):
 
       # Add track nodes and edges
       self.graph.add_vertices(
-          n=num_new_track_nodes, attributes=track_node_attributes
+          n=num_tracks, attributes=track_node_attributes
       )
       self.graph.add_edges(es=track_edges, attributes=track_edge_attributes)
     else:
@@ -755,8 +751,6 @@ class GraphSearchTrackEnv(gym.Env):
         w_sum,
         np.array([num_active_tracks]),
         np.array([track_qualities.mean()]),
-        np.array([track_qualities.min()]),
-        np.array([track_qualities.max()]),
     ], axis=-1)
 
     obs = dict(

@@ -512,6 +512,7 @@ class GraphSearchTrackEnv(gym.Env):
       )
       track_edges = []
       track_nodes = self.graph.vs(type_eq='track')
+      track_qualities = self.track_quality(self.tracker.mb)
       for i, meta in enumerate(self.tracker.mb_metadata):
         if i >= self.max_active_tracks:  # At track capacity
           track_history['delete'] = True
@@ -525,14 +526,6 @@ class GraphSearchTrackEnv(gym.Env):
             meta['num_detections'] / self.scenario['num_initiate_detections'],
             0, 1
         )
-
-        track_covar = self.tracker.mb.state.covar[i]
-        track_trace = np.linalg.trace(
-            track_covar[np.ix_(self.pos_inds, self.pos_inds)]
-        )
-        track_quality = 1 - np.clip(
-            track_trace / self.scenario['max_trace'], 0, 1
-        )
         track_node_attributes.update(
             id=track_node_attributes['id'] + [track_id],
             name=track_node_attributes['name'] + [track_node_name],
@@ -541,7 +534,7 @@ class GraphSearchTrackEnv(gym.Env):
             measurement_label=track_node_attributes['measurement_label'] +
             [measurement_label_map[track_measurement_type]],
             track_quality=track_node_attributes['track_quality'] +
-            [track_quality],
+            [track_qualities[i]],
             initiation_progress=track_node_attributes['initiation_progress'] +
             [track_initiation_progress],
         )
@@ -735,12 +728,7 @@ class GraphSearchTrackEnv(gym.Env):
       ])
       num_active_tracks = np.count_nonzero(initiated)
       if num_active_tracks > 0:
-        valid_mb = self.tracker.mb[initiated]
-        valid_covars = valid_mb.state.covar[
-            np.ix_(np.arange(len(valid_mb)), self.pos_inds, self.pos_inds)
-        ]
-        traces = np.linalg.trace(valid_covars)
-        track_qualities = 1 - (traces / self.scenario['max_trace']).clip(0, 1)
+        track_qualities = self.track_quality(self.tracker.mb[initiated])
       else:
         track_qualities = np.zeros(1)
     else:
@@ -778,13 +766,8 @@ class GraphSearchTrackEnv(gym.Env):
       return search_reward
 
     # Search-and-track case
-    mb = self.tracker.mb[initiated]
-    covars = mb.state.covar[
-        np.ix_(np.arange(len(mb)), self.pos_inds, self.pos_inds)
-    ]
-    traces = np.linalg.trace(covars)
-    track_errors = traces / self.scenario['max_trace']
-    track_reward = (1 - track_errors.clip(0, 1)).sum()
+    track_qualities = self.track_quality(self.tracker.mb[initiated])
+    track_reward = track_qualities.sum()
     return search_reward + track_reward
 
   def update_sensor_state(self, action: np.ndarray) -> None:
@@ -845,6 +828,15 @@ class GraphSearchTrackEnv(gym.Env):
     Z = Z[detected]
 
     return Z
+
+  def track_quality(self, tracks: MultiBernoulli) -> np.ndarray:
+    """Compute track quality based on trace of covariance."""
+    covars = tracks.state.covar[
+        np.ix_(np.arange(len(tracks)), self.pos_inds, self.pos_inds)
+    ]
+    traces = np.linalg.trace(covars)
+    track_quality = 1 - (traces / self.scenario['max_trace']).clip(0, 1)
+    return track_quality
 
   @staticmethod
   def pd(

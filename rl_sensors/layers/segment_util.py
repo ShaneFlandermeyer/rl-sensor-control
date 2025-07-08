@@ -4,6 +4,7 @@ from typing import *
 import jax
 import jax.numpy as jnp
 
+
 def _replace_empty_segments_with_constant(aggregated_segments: jnp.ndarray,
                                           segment_ids: jnp.ndarray,
                                           num_segments: Optional[int] = None,
@@ -91,21 +92,13 @@ def segment_softmax(logits: jnp.ndarray,
   Returns:
     The segment softmax-ed ``logits``.
   """
-  # First, subtract the segment max for numerical stability
-  maxs = segment_max_or_constant(
-      logits,
-      segment_ids,
-      num_segments,
-      indices_are_sorted,
-      unique_indices
-  )
-  logits = logits - maxs[segment_ids]
-  # Then take the exp
-  logits = jnp.exp(logits)
-  # Then calculate the normalizers
-  normalizers = jax.ops.segment_sum(
-      logits, segment_ids, num_segments, indices_are_sorted, unique_indices
-  )
-  normalizers = normalizers[segment_ids]
-  softmax = logits / (normalizers + jnp.finfo(logits).eps)
-  return softmax
+  numerator = jnp.exp(logits - logits.max())
+  denominator = jax.ops.segment_sum(
+      data=numerator.astype(jnp.float32),
+      segment_ids=segment_ids,
+      num_segments=num_segments,
+      indices_are_sorted=indices_are_sorted,
+      unique_indices=unique_indices
+  )[segment_ids]
+  softmax = numerator / (denominator + 1e-10)
+  return softmax.astype(logits.dtype)

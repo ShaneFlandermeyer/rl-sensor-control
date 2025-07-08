@@ -38,8 +38,8 @@ class GraphSAGE(nn.Module):
         kernel_init=self.kernel_init,
         dtype=self.dtype
     )
-    xi, xj = jnp.split(W(node_features), 2, axis=-1)
-    xji = jnp.take_along_axis(xj, senders[..., None], axis=-2)
+    h, h_self = jnp.split(W(node_features), 2, axis=-1)
+    e = jnp.take_along_axis(h, senders[..., None], axis=-2)
     if edge_features is not None:
       W_e = nn.Dense(
           self.embed_dim,
@@ -47,16 +47,16 @@ class GraphSAGE(nn.Module):
           kernel_init=self.kernel_init,
           dtype=self.dtype
       )
-      xji = xji + W_e(edge_features)
+      e = e + W_e(edge_features)
 
     #####################################
     # Aggregate edges
     #####################################
     in_degree = segment_sum(jnp.ones_like(receivers), receivers, num_nodes)
     edge_scale = jnp.take_along_axis(in_degree, senders, axis=-1)[..., None]
-    xji = xji.astype(jnp.float32) / (edge_scale + 1e-8)
+    e = e / (edge_scale + jnp.finfo(jnp.float32).eps)
 
-    nodes = xi + segment_sum(xji, receivers, num_nodes)
+    nodes = h_self + segment_sum(e, receivers, num_nodes)
 
     # Update graph and return
     return dict(

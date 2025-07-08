@@ -85,16 +85,18 @@ def train(cfg: dict):
   ##############################
   # Agent setup
   ##############################
-  dtype = jnp.dtype(model_config.dtype)
   rng, model_key, encoder_key = jax.random.split(rng, 3)
   encoder_module = nn.Sequential([
       GraphEncoder(
           embed_dim=encoder_config.embed_dim,
           num_layers=encoder_config.num_layers,
           num_heads=encoder_config.num_heads,
-          kernel_init=nn.initializers.xavier_normal(),
+          kernel_init=nn.initializers.truncated_normal(0.02),
+          dtype=encoder_config.dtype,
       ),
-      NormedLinear(model_config.latent_dim, activation=None, dtype=dtype)
+      NormedLinear(
+          model_config.latent_dim, activation=None, dtype=encoder_config.dtype
+      ),
   ]
   )
 
@@ -195,7 +197,6 @@ def train(cfg: dict):
     ##############################
     ep_count = np.zeros(env_config.num_envs, dtype=int)
     prev_logged_step = global_step
-    plan = None
     observation, _ = env.reset(seed=cfg.seed)
 
     T = 500
@@ -204,18 +205,21 @@ def train(cfg: dict):
     )
     pbar = tqdm.tqdm(initial=global_step, total=cfg.max_steps)
     done = np.zeros(env_config.num_envs, dtype=bool)
+    plan = None
     for global_step in range(global_step, cfg.max_steps, env_config.num_envs):
       if global_step <= seed_steps:
         action = env.action_space.sample()
       else:
         rng, action_key = jax.random.split(rng)
         action, plan = agent.act(
-            observation,
+            obs=observation,
+            mpc=True,
             prev_plan=plan,
             deterministic=False,
-            train=False,
+            train=True,
             key=action_key
         )
+        action = np.array(action)
 
       next_observation, reward, terminated, truncated, info = env.step(action)
 
@@ -229,7 +233,7 @@ def train(cfg: dict):
                 terminated=terminated,
                 truncated=truncated
             ),
-            env_mask=~done
+            mask=~done
         )
       observation = next_observation
 

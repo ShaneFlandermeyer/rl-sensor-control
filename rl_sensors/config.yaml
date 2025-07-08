@@ -5,14 +5,14 @@ hydra:
     dir: outputs/${hydra.job.name}/${now:%Y-%m-%d_%H-%M-%S}
 
 seed: 0
-max_steps: 400_000
-buffer_size: 400_000
-save_interval_steps: 100000
-log_interval_steps: 10000
+max_steps: 3_000_000
+buffer_size: 1_000_000
+save_interval_steps: 100_000
+log_interval_steps: 10_000
 
 env:
   backend: gymnasium
-  env_id: GraphSearch-v0
+  env_id: GraphSearchTrack-v0
   num_envs: 4
   utd_ratio: 1.0
   asynchronous: True
@@ -21,10 +21,11 @@ env:
 
 encoder:
   embed_dim: 128
-  num_layers: 2
+  num_layers: 3
   num_heads: 4
-  learning_rate: 3e-4
+  learning_rate: 1e-4
   tabulate: True
+  dtype: bfloat16
 
 world_model:
   latent_dim: 512
@@ -37,28 +38,27 @@ world_model:
   simnorm_dim: 8
   learning_rate: 3e-4
   predict_continues: False
-  dtype: float32
+  dtype: bfloat16
   max_grad_norm: 20
   tabulate: False
 
 tdmpc2:
   # Planning
-  mpc: True
-  horizon: 1
+  horizon: 3
   mppi_iterations: 6
   population_size: 512
   policy_prior_samples: 24
   num_elites: 64
   min_plan_std: 0
   max_plan_std: 2
-  temperature: 1.0
+  temperature: 0.5
   # Optimization
   batch_size: 256
-  discount: 0.95
+  discount: 0.9
   rho: 0.5
-  consistency_coef: 20
-  reward_coef: 0.1
-  continue_coef: 1.0
-  value_coef: 0.1
+  consistency_loss_scale: 20
+  reward_loss_scale: 0.1
+  value_loss_scale: 0.1
+  continue_loss_scale: 0.0
   entropy_coef: 1e-4
   tau: 0.01

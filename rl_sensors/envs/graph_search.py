@@ -9,6 +9,7 @@ from motpy.distributions.gaussian import Gaussian
 import scipy.stats
 from motpy.estimators.kalman.sigma_points import (merwe_scaled_sigma_points,
                                                   merwe_sigma_weights)
+from motpy.rfs.tomb import TOMBP
 
 
 class GraphSearchEnv(gym.Env):
@@ -63,6 +64,9 @@ class GraphSearchEnv(gym.Env):
       seed: Optional[int] = None,
       **kwargs
   ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    ###########################
+    # Initialize environment
+    ###########################
     self.timestep = 0
     if seed is not None:
       self.np_random, seed = gym.utils.seeding.np_random(seed)
@@ -73,7 +77,8 @@ class GraphSearchEnv(gym.Env):
         extents=np.array([
             [-1000, 1000],
             [-1000, 1000]
-        ])
+        ]),
+        birth_rate=1/25,
     )
     self.sensor = dict(
         position=np.zeros(2),
@@ -82,30 +87,40 @@ class GraphSearchEnv(gym.Env):
         action=np.zeros(1),
     )
 
-    # Create the search grid
+    ###########################
+    # Initialize tracker
+    ###########################
+    # Birth distribution
     xmin, xmax = self.scenario['extents'][0]
     ymin, ymax = self.scenario['extents'][1]
     x = np.linspace(xmin, xmax, self.nx_grid)
     y = np.linspace(ymin, ymax, self.ny_grid)
     dx = 0.5*(xmax - xmin) / self.nx_grid
     dy = 0.5*(ymax - ymin) / self.ny_grid
-    grid_means = np.array(np.meshgrid(x, y)).T.reshape(-1, 2)
-    grid_covars = np.diag(np.array([dx, dy])**2)[None, ...].repeat(
+    birth_means = np.array(np.meshgrid(x, y)).T.reshape(-1, 2)
+    birth_covars = np.diag(np.array([dx, dy])**2)[None, ...].repeat(
         self.n_grid, axis=0
     )
+    birth_state = Gaussian(
+        mean=birth_means,
+        covar=birth_covars,
+        weight=np.full(self.n_grid, self.scenario['birth_rate'] / self.n_grid)
+    )
 
-    # Randomly initialize search grid
-    birth_rate = 1/25
+    # Initial undetected distribution
     init_wsum = self.np_random.uniform(1, 5)
-    weights = self.np_random.uniform(0, 1, size=self.n_grid)
-    weights = (weights / weights.sum()) * init_wsum
+    undetected_weight = self.np_random.uniform(0, 1, size=self.n_grid)
+    undetected_state = Gaussian(
+        mean=birth_means,
+        covar=birth_covars,
+        weight=init_wsum * (undetected_weight / undetected_weight.sum())
+    )
 
-    self.search_grid = dict(
-        positions=grid_means,
-        covars=grid_covars,
-        weights=weights,
-        birth_rate=birth_rate,
-        num_components=grid_means.shape[0]
+    self.tracker = TOMBP(
+        birth_state=birth_state,
+        undetected_state=undetected_state,
+        pg=None,
+        poisson_pd_threshold=None,
     )
 
     self.graph = igraph.Graph(directed=True)
@@ -127,22 +142,23 @@ class GraphSearchEnv(gym.Env):
 
     # Predict step: Surivival and birth
     search_ps = self.ps(
-        object_state=self.search_grid,
+        object_state=self.tracker.poisson.state,
         scenario=self.scenario,
         sensor=self.sensor,
     )
-    self.search_grid['weights'] = search_ps * self.search_grid['weights'] + \
-        (self.search_grid['birth_rate'] / self.n_grid)
-
-    # For reward calculation
-    self.w_pred_sum = self.search_grid['weights'].sum()
+    # TODO: Replace with TOMB/P predict
+    self.tracker.poisson.state.weight = \
+        search_ps * self.tracker.poisson.state.weight + \
+        self.tracker.poisson.birth_distribution.weight
 
     # Update step
     search_pd = self.pd(
-        object_state=self.search_grid,
+        object_state=self.tracker.poisson.state,
         sensor=self.sensor,
     )
-    self.search_grid['weights'] = (1 - search_pd) * self.search_grid['weights']
+    # TODO: Replace with TOMB/P update
+    self.tracker.poisson.state.weight = (1 - search_pd) * \
+        self.tracker.poisson.state.weight
 
     # Env update
     self.update_graph()
@@ -159,24 +175,23 @@ class GraphSearchEnv(gym.Env):
     #############################
     if self.timestep == 0:
       self.graph.add_vertices(
-          n=self.search_grid['num_components'],
+          n=self.tracker.poisson.size,
           attributes=dict(
               name=[
-                  f'search_{i}'
-                  for i in range(self.search_grid['num_components'])
+                  f'search_{i}' for i in range(self.tracker.poisson.size)
               ],
               type='search',
               timestep=self.timestep,
               class_label=np.array([[1, 0]]),
-              position=self.search_grid['positions'],
-              weight=self.search_grid['weights'],
+              position=self.tracker.poisson.state.mean,
+              covar=self.tracker.poisson.state.covar,
+              weight=self.tracker.poisson.state.weight,
               sensor_action=np.zeros((1, 1)),
-              covar=self.search_grid['covars'],
           )
       )
     else:
       search_nodes = self.graph.vs(type_eq='search')
-      search_nodes['weight'] = self.search_grid['weights']
+      search_nodes['weight'] = self.tracker.poisson.state.weight
       search_nodes['timestep'] = self.timestep
 
     ##############################
@@ -199,7 +214,7 @@ class GraphSearchEnv(gym.Env):
       last_agent = self.graph.vs(
           type_eq='agent', timestep_eq=self.timestep-1
       )[0]
-      agent_transition_dist = np.linalg.norm(
+      agent_edge_dist = np.linalg.norm(
           np.array(current_agent['position']) -
           np.array(last_agent['position']),
       )
@@ -208,7 +223,7 @@ class GraphSearchEnv(gym.Env):
           source=last_agent,
           target=current_agent,
           class_label=np.array([1, 0]),
-          distance=agent_transition_dist,
+          distance=agent_edge_dist,
           angle=np.arctan2(
               last_agent['position'][1] - current_agent['position'][1],
               last_agent['position'][0] - current_agent['position'][0]
@@ -220,7 +235,7 @@ class GraphSearchEnv(gym.Env):
           source=current_agent,
           target=last_agent,
           class_label=np.array([1, 0]),
-          distance=agent_transition_dist,
+          distance=agent_edge_dist,
           angle=np.arctan2(
               current_agent['position'][1] - last_agent['position'][1],
               current_agent['position'][0] - last_agent['position'][0]
@@ -234,7 +249,7 @@ class GraphSearchEnv(gym.Env):
     sensor_pos = np.array(self.sensor['position'])
     if self.timestep > 0:
       search_pd = self.pd(
-          object_state=self.search_grid,
+          object_state=self.tracker.poisson.state,
           sensor=self.sensor,
       )
       detected_search = np.where(search_pd > 0)[0]
@@ -247,7 +262,7 @@ class GraphSearchEnv(gym.Env):
         ]
 
         # NOTE: Assumes search nodes have the same ordering as the search grid
-        search_update_dists = np.linalg.norm(
+        search_edge_dist = np.linalg.norm(
             search_pos[detected_search] - sensor_pos, axis=-1
         )
 
@@ -260,7 +275,7 @@ class GraphSearchEnv(gym.Env):
                 type='update',
                 class_label=np.array([[0, 1]]),
                 pd=search_pd[detected_search],
-                distance=search_update_dists,
+                distance=search_edge_dist,
                 angle=np.arctan2(
                     search_pos[detected_search, 1] - sensor_pos[1],
                     search_pos[detected_search, 0] - sensor_pos[0]
@@ -276,7 +291,7 @@ class GraphSearchEnv(gym.Env):
                 type='update',
                 class_label=np.array([[0, 1]]),
                 pd=search_pd[detected_search],
-                distance=search_update_dists,
+                distance=search_edge_dist,
                 angle=np.arctan2(
                     sensor_pos[1] - search_pos[detected_search, 1],
                     sensor_pos[0] - search_pos[detected_search, 1]
@@ -355,7 +370,8 @@ class GraphSearchEnv(gym.Env):
       }
       # Pre-process features
       edge_dict.update(
-          distance=edge_dict['distance'] / distance_scale
+          distance=edge_dict['distance'] / distance_scale,
+          angle=edge_dict['angle'] / np.pi,
       )
       edge_features = np.concatenate(
           [
@@ -395,8 +411,8 @@ class GraphSearchEnv(gym.Env):
     ###########################
     # Global features
     ###########################
-    w_sum = np.sum(self.search_grid['weights'], keepdims=True)
-    w_max = np.max(self.search_grid['weights'], keepdims=True)
+    w_sum = np.sum(self.tracker.poisson.state.weight, keepdims=True)
+    w_max = np.max(self.tracker.poisson.state.weight, keepdims=True)
     global_features = np.stack([
         w_sum,
         np.log(w_max + 1e-10),
@@ -413,7 +429,7 @@ class GraphSearchEnv(gym.Env):
     return obs
 
   def get_reward(self) -> float:
-    w = self.search_grid['weights']
+    w = self.tracker.poisson.state.weight
     reward = -w.sum()
     return reward
 
@@ -429,8 +445,8 @@ class GraphSearchEnv(gym.Env):
     n = 2
     alpha, beta, kappa = 0.5, 2, 0
     points = merwe_scaled_sigma_points(
-        x=object_state['positions'],
-        P=object_state['covars'],
+        x=object_state.mean,
+        P=object_state.covar,
         alpha=alpha,
         beta=beta,
         kappa=kappa
@@ -450,8 +466,8 @@ class GraphSearchEnv(gym.Env):
     )
     angle_diff = np.mod((az - steering_angle) + np.pi, 2*np.pi) - np.pi
     in_region = abs(angle_diff) <= beamwidth/2
-    pd = np.where(in_region, 0.9, 0).mean(axis=-1)
-    return pd
+    pd = np.where(in_region, 0.9, 0)
+    return np.sum(pd * weights, axis=-1)
 
   @staticmethod
   def ps(

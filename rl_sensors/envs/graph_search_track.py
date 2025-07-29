@@ -336,9 +336,12 @@ class GraphSearchTrackEnv(gym.Env):
       )
     else:
       search_nodes = self.graph.vs(type_eq='search')
+      search_nodes['timestep'] = self.timestep
       search_nodes['weight'] = self.tracker.poisson.state.weight / \
           self.tracker.poisson.state.weight.max()
-      search_nodes['timestep'] = self.timestep
+      search_nodes['covar_diag'] = np.sqrt(
+          np.diagonal(self.tracker.poisson.state.covar, axis1=-1, axis2=-2)
+      )
 
     ##############################
     # Agent nodes
@@ -845,7 +848,6 @@ class GraphSearchTrackEnv(gym.Env):
       pos_inds: List[int],
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
-      n = 2
       alpha, beta, kappa = 0.5, 2, 0
       x = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
@@ -857,7 +859,8 @@ class GraphSearchTrackEnv(gym.Env):
           kappa=kappa
       )
       weights = merwe_sigma_weights(
-          ndim_state=n, alpha=alpha, beta=beta, kappa=kappa)[0]
+          ndim_state=len(pos_inds), alpha=alpha, beta=beta, kappa=kappa
+      )[0]
       weights = abs(weights) / abs(weights).sum()
     else:
       x = object_state[..., None, pos_inds]
@@ -883,18 +886,31 @@ class GraphSearchTrackEnv(gym.Env):
       pos_inds: List[int],
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
-      x = object_state.mean[:, pos_inds]
-      weights = np.ones(1)
+      alpha, beta, kappa = 0.5, 2, 0
+      x = merwe_scaled_sigma_points(
+          x=object_state.mean[:, pos_inds],
+          P=object_state.covar[
+              np.ix_(np.arange(object_state.shape[0]), pos_inds, pos_inds)
+          ],
+          alpha=alpha,
+          beta=beta,
+          kappa=kappa
+      )
+      weights = merwe_sigma_weights(
+          ndim_state=len(pos_inds), alpha=alpha, beta=beta, kappa=kappa
+      )[0]
+      weights = abs(weights) / abs(weights).sum()
     else:
-      x = object_state[:, pos_inds]
+      x = object_state[:, None, pos_inds]
       weights = np.ones(1)
+      
     in_region = np.logical_and.reduce([
-        x[:, 0] >= scenario['extents'][0][0],
-        x[:, 0] <= scenario['extents'][0][1],
-        x[:, 1] >= scenario['extents'][1][0],
-        x[:, 1] <= scenario['extents'][1][1],
+        x[..., 0] >= scenario['extents'][0][0],
+        x[..., 0] <= scenario['extents'][0][1],
+        x[..., 1] >= scenario['extents'][1][0],
+        x[..., 1] <= scenario['extents'][1][1],
     ])
-    ps = np.where(in_region, 0.99, 0)[:, None]
+    ps = np.where(in_region, 0.999, 0)
 
     return np.average(ps, weights=weights, axis=-1)
 

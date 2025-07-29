@@ -53,7 +53,7 @@ tdmpc2:
   max_plan_std: 2
   temperature: 0.5
   # Optimization
-  batch_size: 256
+  batch_size: 128
   discount: 0.9
   rho: 0.5
   consistency_loss_scale: 20

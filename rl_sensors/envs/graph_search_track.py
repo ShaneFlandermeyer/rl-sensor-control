@@ -149,10 +149,10 @@ class GraphSearchTrackEnv(gym.Env):
     # Birth distribution
     xmin, xmax = self.scenario['extents'][0]
     ymin, ymax = self.scenario['extents'][1]
-    x = np.linspace(xmin, xmax, self.nx_grid)
-    y = np.linspace(ymin, ymax, self.ny_grid)
     dx = 0.5*(xmax - xmin) / self.nx_grid
     dy = 0.5*(ymax - ymin) / self.ny_grid
+    x = np.linspace(xmin, xmax, self.nx_grid)
+    y = np.linspace(ymin, ymax, self.ny_grid)
     dvx = dvy = self.scenario['max_velocity']
     grid_x, grid_y = np.meshgrid(x, y, indexing='ij')
     grid_x, grid_y = grid_x.ravel(), grid_y.ravel()
@@ -220,6 +220,7 @@ class GraphSearchTrackEnv(gym.Env):
             len(self.tracker.poisson)//2, len(self.tracker.poisson)
         )
     )
+    self.tracker.poisson.state = self.poisson_survival_reduce()
 
     # Update step
     volume = np.prod(np.diff(self.scenario['extents'], axis=-1).ravel())
@@ -790,7 +791,7 @@ class GraphSearchTrackEnv(gym.Env):
           scenario=self.scenario,
           pos_inds=self.pos_inds,
       )
-      survived = ps > 0  # Only actually die outside scenario region
+      survived = self.np_random.uniform(size=len(self.ground_truth)) < ps
       for i, path in enumerate(self.ground_truth.copy()):
         if survived[i]:
           path.append(next_states[i])
@@ -840,6 +841,42 @@ class GraphSearchTrackEnv(gym.Env):
     traces = np.linalg.trace(covars)
     track_quality = 1 - (traces / self.scenario['max_trace']).clip(0, 1)
     return track_quality
+
+  def poisson_survival_reduce(self) -> Gaussian:
+    # Use sigma points to reduce covariance in regions with low survival prob.
+    alpha, beta, kappa = 0.5, 2, 0
+    sigma_points = merwe_scaled_sigma_points(
+        x=self.tracker.poisson.state.mean,
+        P=self.tracker.poisson.state.covar,
+        alpha=alpha,
+        beta=beta,
+        kappa=kappa
+    )
+    ps = self.ps(
+        object_state=sigma_points,
+        scenario=self.scenario,
+        pos_inds=self.pos_inds
+    )
+
+    Wm, Wc = merwe_sigma_weights(
+        ndim_state=sigma_points.shape[-1], alpha=alpha, beta=beta, kappa=kappa
+    )
+    Wm = ps * abs(Wm) / (ps * abs(Wm)).sum(axis=-1, keepdims=True)
+    Wc = ps * Wc
+
+    mu = np.sum(sigma_points * Wm[..., None], axis=-2)
+    y = sigma_points - mu[..., None, :]
+    I = np.eye(sigma_points.shape[-1])
+    P = np.sum(
+        Wc[..., None, None] * (y[..., :, None] * y[..., None, :] + 1e-6 * I),
+        axis=-3
+    )
+
+    return Gaussian(
+        mean=mu,
+        covar=P,
+        weight=self.tracker.poisson.state.weight
+    )
 
   @staticmethod
   def pd(
@@ -900,19 +937,25 @@ class GraphSearchTrackEnv(gym.Env):
           ndim_state=len(pos_inds), alpha=alpha, beta=beta, kappa=kappa
       )[0]
       weights = abs(weights) / abs(weights).sum()
+      ps = np.where(
+          np.logical_and.reduce([
+              x[..., 0] >= scenario['extents'][0][0],
+              x[..., 0] <= scenario['extents'][0][1],
+              x[..., 1] >= scenario['extents'][1][0],
+              x[..., 1] <= scenario['extents'][1][1],
+          ]), 0.999, 0
+      )
+      return np.average(ps, weights=weights, axis=-1)
     else:
-      x = object_state[:, None, pos_inds]
-      weights = np.ones(1)
-      
-    in_region = np.logical_and.reduce([
-        x[..., 0] >= scenario['extents'][0][0],
-        x[..., 0] <= scenario['extents'][0][1],
-        x[..., 1] >= scenario['extents'][1][0],
-        x[..., 1] <= scenario['extents'][1][1],
-    ])
-    ps = np.where(in_region, 0.999, 0)
-
-    return np.average(ps, weights=weights, axis=-1)
+      x = object_state[..., pos_inds]
+      return np.where(
+          np.logical_and.reduce([
+              x[..., 0] >= scenario['extents'][0][0],
+              x[..., 0] <= scenario['extents'][0][1],
+              x[..., 1] >= scenario['extents'][1][0],
+              x[..., 1] <= scenario['extents'][1][1],
+          ]), 0.999, 0
+      )
 
   def render(self, graph: igraph.Graph = None):
     if graph is None:

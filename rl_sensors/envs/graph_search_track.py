@@ -844,7 +844,9 @@ class GraphSearchTrackEnv(gym.Env):
 
   def poisson_survival_reduce(self) -> Gaussian:
     # Use sigma points to reduce covariance in regions with low survival prob.
-    alpha, beta, kappa = 0.5, 2, 0
+    # NOTE: The "best" choice for alpha in this case is probably 1/sqrt(state_dim), since that puts the sigma points at the "edges" of the covariance ellipsoid.
+    state_dim = self.tracker.poisson.state.mean.shape[-1]
+    alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
     sigma_points = merwe_scaled_sigma_points(
         x=self.tracker.poisson.state.mean,
         P=self.tracker.poisson.state.covar,
@@ -859,14 +861,14 @@ class GraphSearchTrackEnv(gym.Env):
     )
 
     Wm, Wc = merwe_sigma_weights(
-        ndim_state=sigma_points.shape[-1], alpha=alpha, beta=beta, kappa=kappa
+        ndim_state=state_dim, alpha=alpha, beta=beta, kappa=kappa
     )
     Wm = ps * abs(Wm) / (ps * abs(Wm)).sum(axis=-1, keepdims=True)
     Wc = ps * Wc
 
     mu = np.sum(sigma_points * Wm[..., None], axis=-2)
     y = sigma_points - mu[..., None, :]
-    I = np.eye(sigma_points.shape[-1])
+    I = np.eye(state_dim)
     P = np.sum(
         Wc[..., None, None] * (y[..., :, None] * y[..., None, :] + 1e-6 * I),
         axis=-3
@@ -885,7 +887,8 @@ class GraphSearchTrackEnv(gym.Env):
       pos_inds: List[int],
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
-      alpha, beta, kappa = 0.5, 2, 0
+      state_dim = len(pos_inds)
+      alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
       x = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
           P=object_state.covar[
@@ -923,7 +926,8 @@ class GraphSearchTrackEnv(gym.Env):
       pos_inds: List[int],
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
-      alpha, beta, kappa = 0.5, 2, 0
+      state_dim = len(pos_inds)
+      alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
       x = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
           P=object_state.covar[

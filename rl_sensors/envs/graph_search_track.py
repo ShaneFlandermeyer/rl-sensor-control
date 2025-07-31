@@ -151,8 +151,8 @@ class GraphSearchTrackEnv(gym.Env):
     ymin, ymax = self.scenario['extents'][1]
     dx = 0.5*(xmax - xmin) / self.nx_grid
     dy = 0.5*(ymax - ymin) / self.ny_grid
-    x = np.linspace(xmin, xmax, self.nx_grid)
-    y = np.linspace(ymin, ymax, self.ny_grid)
+    x = np.linspace(xmin+dx, xmax-dx, self.nx_grid)
+    y = np.linspace(ymin+dy, ymax-dy, self.ny_grid)
     dvx = dvy = self.scenario['max_velocity']
     grid_x, grid_y = np.meshgrid(x, y, indexing='ij')
     grid_x, grid_y = grid_x.ravel(), grid_y.ravel()
@@ -170,12 +170,11 @@ class GraphSearchTrackEnv(gym.Env):
     )
 
     # Initial undetected distribution
-    init_wsum = self.np_random.uniform(1, 5)
     undetected_weight = self.np_random.uniform(0, 1, size=self.n_grid)
     undetected_state = Gaussian(
         mean=birth_means,
         covar=birth_covars,
-        weight=init_wsum * (undetected_weight / undetected_weight.sum())
+        weight=undetected_weight / undetected_weight.sum()
     )
 
     self.tracker = TOMBP(

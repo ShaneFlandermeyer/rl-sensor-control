@@ -863,16 +863,15 @@ class GraphSearchTrackEnv(gym.Env):
     Wm, Wc = merwe_sigma_weights(
         ndim_state=state_dim, alpha=alpha, beta=beta, kappa=kappa
     )
-    Wm = ps * abs(Wm) / (ps * abs(Wm)).sum(axis=-1, keepdims=True)
+    Wm = ps * abs(Wm) / (ps * abs(Wm) + 1e-15).sum(axis=-1, keepdims=True)
     Wc = ps * Wc
 
     mu = np.sum(sigma_points * Wm[..., None], axis=-2)
     y = sigma_points - mu[..., None, :]
     I = np.eye(state_dim)
     P = np.sum(
-        Wc[..., None, None] * (y[..., :, None] * y[..., None, :] + 1e-6 * I),
-        axis=-3
-    )
+        Wc[..., None, None] * (y[..., :, None] * y[..., None, :]), axis=-3
+    ) + 1e-6 * I
 
     return Gaussian(
         mean=mu,
@@ -928,7 +927,7 @@ class GraphSearchTrackEnv(gym.Env):
     if isinstance(object_state, Gaussian):
       state_dim = len(pos_inds)
       alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
-      x = merwe_scaled_sigma_points(
+      sigma_points = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
           P=object_state.covar[
               np.ix_(np.arange(object_state.shape[0]), pos_inds, pos_inds)
@@ -943,21 +942,20 @@ class GraphSearchTrackEnv(gym.Env):
       weights = abs(weights) / abs(weights).sum()
       ps = np.where(
           np.logical_and.reduce([
-              x[..., 0] >= scenario['extents'][0][0],
-              x[..., 0] <= scenario['extents'][0][1],
-              x[..., 1] >= scenario['extents'][1][0],
-              x[..., 1] <= scenario['extents'][1][1],
+              sigma_points[..., 0] >= scenario['extents'][0][0],
+              sigma_points[..., 0] <= scenario['extents'][0][1],
+              sigma_points[..., 1] >= scenario['extents'][1][0],
+              sigma_points[..., 1] <= scenario['extents'][1][1],
           ]), 0.999, 0
       )
       return np.average(ps, weights=weights, axis=-1)
     else:
-      x = object_state[..., pos_inds]
       return np.where(
           np.logical_and.reduce([
-              x[..., 0] >= scenario['extents'][0][0],
-              x[..., 0] <= scenario['extents'][0][1],
-              x[..., 1] >= scenario['extents'][1][0],
-              x[..., 1] <= scenario['extents'][1][1],
+              object_state[..., pos_inds[0]] >= scenario['extents'][0][0],
+              object_state[..., pos_inds[0]] <= scenario['extents'][0][1],
+              object_state[..., pos_inds[1]] >= scenario['extents'][1][0],
+              object_state[..., pos_inds[1]] <= scenario['extents'][1][1],
           ]), 0.999, 0
       )
 

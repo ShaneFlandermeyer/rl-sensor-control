@@ -103,13 +103,14 @@ class GraphSearchTrackEnv(gym.Env):
             [-1000, 1000]
         ]),
         max_velocity=10,
-        birth_rate=1/30,
-        clutter_rate=0.0,
+        birth_rate=1/50,
+        clutter_rate=0.5,
         dt=1.0,
         max_trace=50**2,
         num_initiate_detections=3,
         r_prune=1e-4,
-        r_min_new=1e-1,
+        min_r_new=1e-2,
+        min_active_quality=1e-2,
         pg=0.999,
     )
     self.sensor = dict(
@@ -137,7 +138,7 @@ class GraphSearchTrackEnv(gym.Env):
     )
     self.measurement_model = LinearMeasurementModel(
         state_dim=4,
-        covar=1*np.eye(2),
+        covar=(1**2)*np.eye(2),
         measured_dims=self.pos_inds,
     )
     self.state_estimator = UnscentedKalmanFilter(
@@ -226,7 +227,8 @@ class GraphSearchTrackEnv(gym.Env):
     self.tracker.poisson.state = self.poisson_survival_reduce()
 
     # Update step
-    volume = np.prod(np.diff(self.scenario['extents'], axis=-1).ravel())
+    volume = (self.sensor['beamwidth'] / (2*np.pi)) * \
+        (np.pi * self.sensor['max_range']**2)
     self.tracker = self.tracker.update(
         measurements=measurements,
         state_estimator=self.state_estimator,
@@ -477,12 +479,13 @@ class GraphSearchTrackEnv(gym.Env):
     #################################
     # Track nodes
     #################################
+    # TODO: Prioritize tracks when at max capacity
+    # 1. Initiated tracks (just the first N if this is also over capacity)
+    # 2. Undetected tracks according to initiation progress
     if len(self.tracker.mb) > 0 and self.max_active_tracks > 0:
       # Delete stale track nodes
       track_ids = [meta['id'] for meta in self.tracker.mb_metadata]
-      stale_track_nodes = self.graph.vs(type_eq='track', id_notin=track_ids)
-      if len(stale_track_nodes) > 0:
-        self.graph.delete_vertices(stale_track_nodes)
+      self.graph.vs(type_eq='track', id_notin=track_ids)['delete'] = True
 
       # Collect track info for this timestep
       num_tracks = min(len(self.tracker.mb), self.max_active_tracks)
@@ -536,12 +539,12 @@ class GraphSearchTrackEnv(gym.Env):
             meta['num_detections'] / self.scenario['num_initiate_detections'],
             0, 1
         )
-        r_active = np.interp(
-            track_initiation_progress,
-            [0, 1],
-            [self.scenario['r_min_new'], self.scenario['r_prune']]
+        track_active = (
+            track_qualities[i] > self.scenario['min_active_quality'] and (
+                meta['initiated'] or
+                (self.tracker.mb.r[i] > self.scenario['min_r_new'])
+            )
         )
-        track_active = meta['initiated'] or (self.tracker.mb.r[i] > r_active)
         track_history['active'] = track_active
 
         new_track_nodes.update(

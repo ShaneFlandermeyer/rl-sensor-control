@@ -108,6 +108,9 @@ class GraphSearchTrackEnv(gym.Env):
         dt=1.0,
         max_trace=50**2,
         num_initiate_detections=3,
+        r_prune=1e-4,
+        r_min_new=1e-2,
+        pg=0.999,
     )
     self.sensor = dict(
         position=np.zeros(2),
@@ -230,12 +233,12 @@ class GraphSearchTrackEnv(gym.Env):
             self.pd, sensor=self.sensor, pos_inds=self.pos_inds
         ),
         lambda_fa=self.scenario['clutter_rate'] / volume,
-        pg=0.999,
+        pg=self.scenario['pg'],
     )
     if len(self.tracker.mb) > 0:
       self.tracker.mb, self.tracker.mb_metadata = self.tracker.mb.prune(
           valid_fn=lambda mb: np.logical_and(
-              mb.r > 1e-4,
+              mb.r > self.scenario['r_prune'],
               np.linalg.trace(
                   mb.state.covar[
                       np.ix_(
@@ -314,6 +317,7 @@ class GraphSearchTrackEnv(gym.Env):
               label=[node_label_map['search']],
               name=search_ids,
               id=search_ids,
+              active=True,
               timestep=self.timestep,
               position=self.tracker.poisson.state.mean[:, self.pos_inds],
               velocity=self.tracker.poisson.state.mean[:, self.vel_inds],
@@ -351,6 +355,7 @@ class GraphSearchTrackEnv(gym.Env):
         label=node_label_map['agent'],
         name=f'agent_t{self.timestep}',
         id='agent',
+        active=True,
         timestep=self.timestep,
         position=self.sensor['position'],
         velocity=self.sensor['velocity'],
@@ -366,8 +371,8 @@ class GraphSearchTrackEnv(gym.Env):
         existence_probability=0.0,
         initiation_progress=0.0,
     )
-    agent_edges = []
-    agent_edge_attributes = dict(
+    new_agent_edges = []
+    new_agent_edge_features = dict(
         type=[],
         label=[],
         pd=[],
@@ -382,23 +387,22 @@ class GraphSearchTrackEnv(gym.Env):
           type_eq='agent', timestep_eq=self.timestep-1
       )[0]
 
-      agent_edges.extend([
+      new_agent_edges.extend([
           (last_agent['name'], current_agent_node['name']),
           (current_agent_node['name'], last_agent['name']),
       ])
-      agent_edge_attributes.update(
-          type=agent_edge_attributes['type'] + ['transition', 'transition'],
-          label=agent_edge_attributes['label'] + 2*[
-              edge_label_map['transition']
-          ],
-          pd=agent_edge_attributes['pd'] + [0.0, 0.0],
-          distance=agent_edge_attributes['distance'] + [0.0, 0.0],
-          angle=agent_edge_attributes['angle'] + [0.0, 0.0],
-          relative_position=agent_edge_attributes['relative_position'] + [
+      new_agent_edge_features.update(
+          type=new_agent_edge_features['type'] + ['transition', 'transition'],
+          label=new_agent_edge_features['label'] +
+          2*[edge_label_map['transition']],
+          pd=new_agent_edge_features['pd'] + [0.0, 0.0],
+          distance=new_agent_edge_features['distance'] + [0.0, 0.0],
+          angle=new_agent_edge_features['angle'] + [0.0, 0.0],
+          relative_position=new_agent_edge_features['relative_position'] + [
               last_agent['position'] - current_agent_node['position'],
               current_agent_node['position'] - last_agent['position'],
           ],
-          relative_velocity=agent_edge_attributes['relative_velocity'] + [
+          relative_velocity=new_agent_edge_features['relative_velocity'] + [
               last_agent['velocity'] - current_agent_node['velocity'],
               current_agent_node['velocity'] - last_agent['velocity'],
           ],
@@ -413,13 +417,12 @@ class GraphSearchTrackEnv(gym.Env):
           for i in range(len(search_nodes))
       ])
       detected_search = np.where(search_pd > 0)[0]
-      num_search_updates = min(len(detected_search), self.top_k_search_update)
-      num_search_edges = 2 * num_search_updates
-      if num_search_updates > 0:
+      num_search_edges = 2*min(len(detected_search), self.top_k_search_update)
+      if len(detected_search) > self.top_k_search_update:
         detected_search = detected_search[
             np.argpartition(
-                search_pd[detected_search], -num_search_updates
-            )[-num_search_updates:]
+                search_pd[detected_search], -self.top_k_search_update
+            )[-self.top_k_search_update:]
         ]
 
         # NOTE: Assumes search nodes have the same ordering as the search grid
@@ -438,29 +441,30 @@ class GraphSearchTrackEnv(gym.Env):
             ).tolist()
         )
 
-        agent_edges.extend([
+        new_agent_edges.extend([
             (search_nodes[i]['name'], current_agent_node['name'])
             for i in detected_search
         ] + [
             (current_agent_node['name'], search_nodes[i]['name'])
             for i in detected_search
         ])
-        agent_edge_attributes.update(
-            type=agent_edge_attributes['type'] + num_search_edges*['update'],
-            label=agent_edge_attributes['label'] + num_search_edges*[
-                edge_label_map['update']
-            ],
-            pd=agent_edge_attributes['pd'] + 2*search_edge_pd,
-            distance=agent_edge_attributes['distance'] + 2*search_edge_dist,
-            angle=agent_edge_attributes['angle'] + search_edge_angles,
-            relative_position=agent_edge_attributes['relative_position'] +
+        new_agent_edge_features.update(
+            type=new_agent_edge_features['type'] + num_search_edges*['update'],
+            label=new_agent_edge_features['label'] +
+            num_search_edges*[edge_label_map['update']],
+            pd=new_agent_edge_features['pd'] + 2*search_edge_pd,
+            distance=new_agent_edge_features['distance'] + 2*search_edge_dist,
+            angle=new_agent_edge_features['angle'] + search_edge_angles,
+            relative_position=new_agent_edge_features['relative_position'] +
             num_search_edges*[np.zeros(2)],
-            relative_velocity=agent_edge_attributes['relative_velocity'] +
+            relative_velocity=new_agent_edge_features['relative_velocity'] +
             num_search_edges*[np.zeros(2)],
         )
 
     self.graph.add_vertex(**current_agent_node)
-    self.graph.add_edges(es=agent_edges, attributes=agent_edge_attributes)
+    self.graph.add_edges(
+        es=new_agent_edges, attributes=new_agent_edge_features
+    )
     # Remove old agent nodes
     agent_nodes = self.graph.vs(type_eq='agent')
     if len(agent_nodes) > self.max_agent_nodes:
@@ -481,12 +485,13 @@ class GraphSearchTrackEnv(gym.Env):
 
       # Collect track info for this timestep
       num_tracks = min(len(self.tracker.mb), self.max_active_tracks)
-      track_node_attributes = dict(
+      new_track_nodes = dict(
           type='track',
           label=[node_label_map['track']],
           name=[],
           id=[],
           timestep=self.timestep,
+          active=[],
           position=self.tracker.mb.state.mean[:num_tracks, self.pos_inds],
           velocity=self.tracker.mb.state.mean[:num_tracks, self.vel_inds],
           covar_diag=np.sqrt(np.diagonal(
@@ -504,7 +509,7 @@ class GraphSearchTrackEnv(gym.Env):
           existence_probability=self.tracker.mb.r[:num_tracks],
           initiation_progress=[],
       )
-      track_edge_attributes = dict(
+      new_track_edge_features = dict(
           type=[],
           label=[],
           pd=[],
@@ -513,61 +518,66 @@ class GraphSearchTrackEnv(gym.Env):
           relative_position=[],
           relative_velocity=[],
       )
-      track_edges = []
+      new_track_edges = []
       track_nodes = self.graph.vs(type_eq='track')
       track_qualities = self.track_quality(self.tracker.mb)
       for i, meta in enumerate(self.tracker.mb_metadata):
+        track_id = meta['id']
+        track_history = track_nodes(id_eq=track_id)
         if i >= self.max_active_tracks:  # At track capacity
           track_history['delete'] = True
           continue
 
         # Update node attributes
-        track_id = meta['id']
         track_node_name = f"{track_id}_t{self.timestep}"
         track_measurement_type = meta['measurement_type']
         track_initiation_progress = np.clip(
             meta['num_detections'] / self.scenario['num_initiate_detections'],
             0, 1
         )
-        track_node_attributes.update(
-            id=track_node_attributes['id'] + [track_id],
-            name=track_node_attributes['name'] + [track_node_name],
-            measurement_type=track_node_attributes['measurement_type'] +
+        track_active = meta['initiated'] or (
+            self.tracker.mb.r[i] > self.scenario['r_min_new']
+        )
+        track_history['active'] = track_active
+
+        new_track_nodes.update(
+            id=new_track_nodes['id'] + [track_id],
+            name=new_track_nodes['name'] + [track_node_name],
+            active=new_track_nodes['active'] + [track_active],
+            measurement_type=new_track_nodes['measurement_type'] +
             [track_measurement_type],
-            measurement_label=track_node_attributes['measurement_label'] +
+            measurement_label=new_track_nodes['measurement_label'] +
             [measurement_label_map[track_measurement_type]],
-            track_quality=track_node_attributes['track_quality'] +
+            track_quality=new_track_nodes['track_quality'] +
             [track_qualities[i]],
-            initiation_progress=track_node_attributes['initiation_progress'] +
+            initiation_progress=new_track_nodes['initiation_progress'] +
             [track_initiation_progress],
         )
 
         # Transition edge
-        track_history = track_nodes(id_eq=track_id)
         track_updates = track_history(measurement_type_eq='update')
         if len(track_updates) > 0:
           last_update = track_updates[-1]
-          track_pos = track_node_attributes['position'][i]
-          track_vel = track_node_attributes['velocity'][i]
+          track_pos = new_track_nodes['position'][i]
+          track_vel = new_track_nodes['velocity'][i]
 
-          track_edges.extend([
+          new_track_edges.extend([
               (last_update['name'], track_node_name),
               (track_node_name, last_update['name'])
           ])
-          track_edge_attributes.update(
-              type=track_edge_attributes['type'] +
+          new_track_edge_features.update(
+              type=new_track_edge_features['type'] +
               ['transition', 'transition'],
-              label=track_edge_attributes['label'] + 2*[
-                  edge_label_map['transition']
-              ],
-              pd=track_edge_attributes['pd'] + [0.0, 0.0],
-              distance=track_edge_attributes['distance'] + [0.0, 0.0],
-              angle=track_edge_attributes['angle'] + [0.0, 0.0],
-              relative_position=track_edge_attributes['relative_position'] + [
+              label=new_track_edge_features['label'] +
+              2*[edge_label_map['transition']],
+              pd=new_track_edge_features['pd'] + [0.0, 0.0],
+              distance=new_track_edge_features['distance'] + [0.0, 0.0],
+              angle=new_track_edge_features['angle'] + [0.0, 0.0],
+              relative_position=new_track_edge_features['relative_position'] + [
                   last_update['position'] - track_pos,
                   track_pos - last_update['position'],
               ],
-              relative_velocity=track_edge_attributes['relative_velocity'] + [
+              relative_velocity=new_track_edge_features['relative_velocity'] + [
                   last_update['velocity'] - track_vel,
                   track_vel - last_update['velocity'],
               ],
@@ -587,40 +597,36 @@ class GraphSearchTrackEnv(gym.Env):
                 self.sensor['position'][0] - track_pos[0]
             ),
         ]
-        track_edges.extend([
+        new_track_edges.extend([
             (track_node_name, current_agent_node['name']),
             (current_agent_node['name'], track_node_name),
         ])
-        track_edge_attributes.update(
-            type=track_edge_attributes['type'] + 2*['update'],
-            label=track_edge_attributes['label'] + 2*[
-                edge_label_map['update']
-            ],
-            pd=track_edge_attributes['pd'] + 2*[track_pd],
-            distance=track_edge_attributes['distance'] + 2*[track_update_dist],
-            angle=track_edge_attributes['angle'] + track_update_angles,
-            relative_position=track_edge_attributes['relative_position'] +
+        new_track_edge_features.update(
+            type=new_track_edge_features['type'] + 2*['update'],
+            label=new_track_edge_features['label'] +
+            2*[edge_label_map['update']],
+            pd=new_track_edge_features['pd'] + 2*[track_pd],
+            distance=new_track_edge_features['distance'] +
+            2*[track_update_dist],
+            angle=new_track_edge_features['angle'] + track_update_angles,
+            relative_position=new_track_edge_features['relative_position'] +
             2*[np.zeros(2)],
-            relative_velocity=track_edge_attributes['relative_velocity'] +
+            relative_velocity=new_track_edge_features['relative_velocity'] +
             2*[np.zeros(2)],
         )
 
         # Track graph pruning
-        old_predicts = track_history(measurement_type_eq='predict')
-        if len(old_predicts) > 0:
-          old_predicts['delete'] = True
+        track_history(measurement_type_eq='predict')['delete'] = True
         if track_measurement_type == 'update':
-          old_misses = track_history(measurement_type_eq='miss')
-          if len(old_misses) > 0:
-            old_misses['delete'] = True
+          track_history(measurement_type_eq='miss')['delete'] = True
         if len(track_history) >= self.max_track_history:
           track_history[:-(self.max_track_history-1)]['delete'] = True
 
       # Add track nodes and edges
-      self.graph.add_vertices(
-          n=num_tracks, attributes=track_node_attributes
+      self.graph.add_vertices(n=num_tracks, attributes=new_track_nodes)
+      self.graph.add_edges(
+          es=new_track_edges, attributes=new_track_edge_features
       )
-      self.graph.add_edges(es=track_edges, attributes=track_edge_attributes)
     else:
       self.graph.vs(type_eq='track')['delete'] = True
 
@@ -636,8 +642,7 @@ class GraphSearchTrackEnv(gym.Env):
     ###########################
     # Nodes
     ###########################
-
-    nodes = self.graph.vs
+    nodes = self.graph.vs(active_eq=True)
     node_keys = [
         'label',
         'age',
@@ -674,7 +679,8 @@ class GraphSearchTrackEnv(gym.Env):
     ###########################
     # Edges
     ###########################
-    edges = self.graph.es
+    graph = self.graph.subgraph(nodes)
+    edges = graph.es
     if len(edges) > 0:
       edge_keys = [
           'label',
@@ -691,7 +697,7 @@ class GraphSearchTrackEnv(gym.Env):
               np.array(edges[k]).reshape((len(edges), -1)) for k in edge_keys
           ], axis=-1
       )
-      edge_list = np.array(self.graph.get_edgelist())
+      edge_list = np.array(graph.get_edgelist())
       # Pad edges
       edge_features = np.pad(
           edge_features,
@@ -832,52 +838,6 @@ class GraphSearchTrackEnv(gym.Env):
 
     return Z
 
-  def track_quality(self, tracks: MultiBernoulli) -> np.ndarray:
-    """Compute track quality based on trace of covariance."""
-    covars = tracks.state.covar[
-        np.ix_(np.arange(len(tracks)), self.pos_inds, self.pos_inds)
-    ]
-    traces = np.linalg.trace(covars)
-    track_quality = 1 - (traces / self.scenario['max_trace']).clip(0, 1)
-    return track_quality
-
-  def poisson_survival_reduce(self) -> Gaussian:
-    # Use sigma points to reduce covariance in regions with low survival prob.
-    # NOTE: The "best" choice for alpha in this case is probably 1/sqrt(state_dim), since that puts the sigma points at the "edges" of the covariance ellipsoid.
-    state_dim = self.tracker.poisson.state.mean.shape[-1]
-    alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
-    sigma_points = merwe_scaled_sigma_points(
-        x=self.tracker.poisson.state.mean,
-        P=self.tracker.poisson.state.covar,
-        alpha=alpha,
-        beta=beta,
-        kappa=kappa
-    )
-    ps = self.ps(
-        object_state=sigma_points,
-        scenario=self.scenario,
-        pos_inds=self.pos_inds
-    )
-
-    Wm, Wc = merwe_sigma_weights(
-        ndim_state=state_dim, alpha=alpha, beta=beta, kappa=kappa
-    )
-    Wm = ps * abs(Wm) / (ps * abs(Wm) + 1e-15).sum(axis=-1, keepdims=True)
-    Wc = ps * Wc
-
-    mu = np.sum(sigma_points * Wm[..., None], axis=-2)
-    y = sigma_points - mu[..., None, :]
-    I = np.eye(state_dim)
-    P = np.sum(
-        Wc[..., None, None] * (y[..., :, None] * y[..., None, :]), axis=-3
-    ) + 1e-6 * I
-
-    return Gaussian(
-        mean=mu,
-        covar=P,
-        weight=self.tracker.poisson.state.weight
-    )
-
   @staticmethod
   def pd(
       object_state: Union[np.ndarray, Gaussian],
@@ -957,6 +917,52 @@ class GraphSearchTrackEnv(gym.Env):
               object_state[..., pos_inds[1]] <= scenario['extents'][1][1],
           ]), 0.999, 0
       )
+
+  def track_quality(self, tracks: MultiBernoulli) -> np.ndarray:
+    """Compute track quality based on trace of covariance."""
+    covars = tracks.state.covar[
+        np.ix_(np.arange(len(tracks)), self.pos_inds, self.pos_inds)
+    ]
+    traces = np.linalg.trace(covars)
+    track_quality = 1 - (traces / self.scenario['max_trace']).clip(0, 1)
+    return track_quality
+
+  def poisson_survival_reduce(self) -> Gaussian:
+    # Use sigma points to reduce covariance in regions with low survival prob.
+    # NOTE: The "best" choice for alpha in this case is probably 1/sqrt(state_dim), since that puts the sigma points at the "edges" of the covariance ellipsoid.
+    state_dim = self.tracker.poisson.state.mean.shape[-1]
+    alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
+    sigma_points = merwe_scaled_sigma_points(
+        x=self.tracker.poisson.state.mean,
+        P=self.tracker.poisson.state.covar,
+        alpha=alpha,
+        beta=beta,
+        kappa=kappa
+    )
+    ps = self.ps(
+        object_state=sigma_points,
+        scenario=self.scenario,
+        pos_inds=self.pos_inds
+    )
+
+    Wm, Wc = merwe_sigma_weights(
+        ndim_state=state_dim, alpha=alpha, beta=beta, kappa=kappa
+    )
+    Wm = ps * abs(Wm) / (ps * abs(Wm) + 1e-15).sum(axis=-1, keepdims=True)
+    Wc = ps * Wc
+
+    mu = np.sum(sigma_points * Wm[..., None], axis=-2)
+    y = sigma_points - mu[..., None, :]
+    I = np.eye(state_dim)
+    P = np.sum(
+        Wc[..., None, None] * (y[..., :, None] * y[..., None, :]), axis=-3
+    ) + 1e-6 * I
+
+    return Gaussian(
+        mean=mu,
+        covar=P,
+        weight=self.tracker.poisson.state.weight
+    )
 
   def render(self, graph: igraph.Graph = None):
     if graph is None:

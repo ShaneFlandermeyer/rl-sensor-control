@@ -103,18 +103,19 @@ class GraphSearchTrackEnv(gym.Env):
             [-1000, 1000]
         ]),
         max_velocity=10,
-        birth_rate=1/25,
+        birth_rate=1/30,
         clutter_rate=0.0,
         dt=1.0,
         max_trace=50**2,
         num_initiate_detections=3,
         r_prune=1e-4,
-        r_min_new=1e-2,
+        r_min_new=1e-1,
         pg=0.999,
     )
     self.sensor = dict(
         position=np.zeros(2),
         velocity=np.zeros(2),
+        max_range=1500,
         beamwidth=20*np.pi/180,
         steering_angle=0,
         action=np.zeros(1),
@@ -535,9 +536,12 @@ class GraphSearchTrackEnv(gym.Env):
             meta['num_detections'] / self.scenario['num_initiate_detections'],
             0, 1
         )
-        track_active = meta['initiated'] or (
-            self.tracker.mb.r[i] > self.scenario['r_min_new']
+        r_active = np.interp(
+            track_initiation_progress,
+            [0, 1],
+            [self.scenario['r_min_new'], self.scenario['r_prune']]
         )
+        track_active = meta['initiated'] or (self.tracker.mb.r[i] > r_active)
         track_history['active'] = track_active
 
         new_track_nodes.update(
@@ -823,20 +827,49 @@ class GraphSearchTrackEnv(gym.Env):
       )
       self.ground_truth.extend([list(state) for state in new_states])
 
-  def measure(self) -> List[np.ndarray]:
+  def measure(self) -> np.ndarray:
     if len(self.ground_truth) == 0:
       return []
 
-    # Measure
+    # Object measurements
     states = np.array([path[-1] for path in self.ground_truth])
-    Z = self.measurement_model(states, noise=True, rng=self.np_random)
-
-    # Only keep detected measurements
     pd = self.pd(states, sensor=self.sensor, pos_inds=self.pos_inds)
     detected = self.np_random.uniform(size=len(self.ground_truth)) < pd
-    Z = Z[detected]
+    if np.any(detected):
+      Z = self.measurement_model(
+          states[detected], noise=True, rng=self.np_random
+      )
+    else:
+      Z = np.empty((0, 2))
+
+    # Clutter measurements
+    Z_clutter = self.measure_clutter()
+    if len(Z_clutter) > 0:
+      Z = np.concatenate([Z, Z_clutter], axis=0)
 
     return Z
+
+  def measure_clutter(self) -> np.ndarray:
+    if self.scenario['clutter_rate'] > 0:
+      num_clutter = self.np_random.poisson(
+          lam=self.scenario['clutter_rate'] * self.scenario['dt']
+      )
+      if num_clutter > 0:
+        clutter_range = self.np_random.uniform(
+            low=0, high=self.sensor['max_range'], size=num_clutter
+        )
+        clutter_angle = self.np_random.uniform(
+            low=self.sensor['steering_angle'] - self.sensor['beamwidth']/2,
+            high=self.sensor['steering_angle'] + self.sensor['beamwidth']/2,
+            size=num_clutter
+        )
+        Z = self.sensor['position'] + np.array([
+            clutter_range * np.cos(clutter_angle),
+            clutter_range * np.sin(clutter_angle),
+        ]).T
+        return Z
+
+    return np.empty((0, 2))
 
   @staticmethod
   def pd(
@@ -967,6 +1000,7 @@ class GraphSearchTrackEnv(gym.Env):
   def render(self, graph: igraph.Graph = None):
     if graph is None:
       graph = self.graph
+    graph = graph.subgraph(graph.vs(active_eq=True))
 
     plt.clf()
 

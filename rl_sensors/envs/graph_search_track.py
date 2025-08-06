@@ -104,14 +104,17 @@ class GraphSearchTrackEnv(gym.Env):
         ]),
         max_velocity=10,
         birth_rate=1/50,
-        clutter_rate=0.5,
+        clutter_rate=0,
         dt=1.0,
         max_trace=50**2,
-        num_initiate_detections=3,
+        pg=0.999, 
+        # Pruning
         r_prune=1e-4,
-        min_r_new=1e-2,
+        trace_prune=5*(50**2),
+        # Initiation
+        num_initiate_detections=3,
+        min_active_r=1e-2,
         min_active_quality=1e-2,
-        pg=0.999,
     )
     self.sensor = dict(
         position=np.zeros(2),
@@ -248,7 +251,7 @@ class GraphSearchTrackEnv(gym.Env):
                           np.arange(len(mb)), self.pos_inds, self.pos_inds
                       )
                   ]
-              ) < 5*self.scenario['max_trace']
+              ) < self.scenario['trace_prune']
           ),
           meta=self.tracker.mb_metadata,
       )
@@ -273,7 +276,8 @@ class GraphSearchTrackEnv(gym.Env):
         num_detections = meta.get('num_detections', 0)
         if measurement_type == 'update':
           num_detections += 1
-        initiated = num_detections >= self.scenario['num_initiate_detections']
+        initiated = meta.get('initiated', False) or \
+            (num_detections >= self.scenario['num_initiate_detections'])
         self.tracker.mb_metadata[i].update(
             pd=track_pd[i],
             measurement_type=measurement_type,
@@ -535,15 +539,11 @@ class GraphSearchTrackEnv(gym.Env):
         # Update node attributes
         track_node_name = f"{track_id}_t{self.timestep}"
         track_measurement_type = meta['measurement_type']
-        track_initiation_progress = np.clip(
-            meta['num_detections'] / self.scenario['num_initiate_detections'],
-            0, 1
-        )
+        track_initiation_progress = 1.0 if meta['initiated'] else \
+            meta['num_detections'] / self.scenario['num_initiate_detections']
         track_active = (
-            track_qualities[i] > self.scenario['min_active_quality'] and (
-                meta['initiated'] or
-                (self.tracker.mb.r[i] > self.scenario['min_r_new'])
-            )
+            (track_qualities[i] > self.scenario['min_active_quality']) and
+            (self.tracker.mb.r[i] > self.scenario['min_active_r'])
         )
         track_history['active'] = track_active
 
@@ -859,7 +859,7 @@ class GraphSearchTrackEnv(gym.Env):
       )
       if num_clutter > 0:
         clutter_range = self.np_random.uniform(
-            low=0, high=self.sensor['max_range'], size=num_clutter
+            low=100, high=self.sensor['max_range'], size=num_clutter
         )
         clutter_angle = self.np_random.uniform(
             low=self.sensor['steering_angle'] - self.sensor['beamwidth']/2,
@@ -1083,7 +1083,7 @@ class GraphSearchTrackEnv(gym.Env):
       for i, pos in enumerate(track_pos):
         plt.text(
             pos[0], pos[1],
-            f"{track_nodes[i]['track_quality']:.2f}",
+            f"q={track_nodes[i]['track_quality']:.2f}\nr={track_nodes[i]['existence_probability']:.2f}",
             fontsize=8,
             color='white',
             ha='center',

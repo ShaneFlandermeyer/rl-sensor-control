@@ -11,7 +11,7 @@ from motpy.distributions.gaussian import Gaussian
 from motpy.estimators.kalman.sigma_points import (merwe_scaled_sigma_points,
                                                   merwe_sigma_weights)
 from motpy.estimators.kalman.ukf import UnscentedKalmanFilter
-from motpy.models.measurement import LinearMeasurementModel
+from motpy.models.measurement import LinearMeasurementModel, Radar2D
 from motpy.models.transition import ConstantVelocity
 from motpy.rfs.bernoulli import MultiBernoulli
 from motpy.rfs.poisson import Poisson
@@ -107,7 +107,7 @@ class GraphSearchTrackEnv(gym.Env):
         clutter_rate=0,
         dt=1.0,
         max_trace=50**2,
-        pg=0.999, 
+        pg=0.999,
         # Pruning
         r_prune=1e-4,
         trace_prune=5*(50**2),
@@ -139,18 +139,18 @@ class GraphSearchTrackEnv(gym.Env):
         velocity_inds=self.vel_inds,
         noise_type='continuous',
     )
-    self.measurement_model = LinearMeasurementModel(
-        state_dim=4,
-        covar=(1**2)*np.eye(2),
-        measured_dims=self.pos_inds,
+    self.measurement_model = Radar2D(
+        covar=np.diag([10, 1*np.pi/180, 1])**2,
+        pos_inds=self.pos_inds,
+        vel_inds=self.vel_inds,
     )
     self.state_estimator = UnscentedKalmanFilter(
         transition_model=self.transition_model,
         measurement_model=self.measurement_model,
         state_subtract_fn=np.subtract,
         state_average_fn=np.average,
-        measurement_subtract_fn=np.subtract,
-        measurement_average_fn=np.average,
+        measurement_subtract_fn=Radar2D.subtract_fn,
+        measurement_average_fn=Radar2D.average_fn,
         sigma_params=dict(alpha=1e-3, beta=2, kappa=0),
     )
 
@@ -240,6 +240,8 @@ class GraphSearchTrackEnv(gym.Env):
         ),
         lambda_fa=self.scenario['clutter_rate'] / volume,
         pg=self.scenario['pg'],
+        sensor_pos=self.sensor['position'],
+        sensor_vel=self.sensor['velocity'],
     )
     if len(self.tracker.mb) > 0:
       self.tracker.mb, self.tracker.mb_metadata = self.tracker.mb.prune(
@@ -840,7 +842,11 @@ class GraphSearchTrackEnv(gym.Env):
     detected = self.np_random.uniform(size=len(self.ground_truth)) < pd
     if np.any(detected):
       Z = self.measurement_model(
-          states[detected], noise=True, rng=self.np_random
+          states[detected],
+          sensor_pos=self.sensor['position'],
+          sensor_vel=self.sensor['velocity'],
+          noise=True,
+          rng=self.np_random
       )
     else:
       Z = np.empty((0, 2))
@@ -984,15 +990,14 @@ class GraphSearchTrackEnv(gym.Env):
     Wm, Wc = merwe_sigma_weights(
         ndim_state=state_dim, alpha=alpha, beta=beta, kappa=kappa
     )
-    Wm = ps * abs(Wm) / (ps * abs(Wm) + 1e-15).sum(axis=-1, keepdims=True)
+    Wm = ps * abs(Wm) / (np.sum(ps * abs(Wm), axis=-1, keepdims=True) + 1e-15)
     Wc = ps * Wc
 
-    mu = np.sum(sigma_points * Wm[..., None], axis=-2)
+    mu = np.sum(Wm[..., None] * sigma_points, axis=-2)
     y = sigma_points - mu[..., None, :]
-    I = np.eye(state_dim)
-    P = np.sum(
-        Wc[..., None, None] * (y[..., :, None] * y[..., None, :]), axis=-3
-    ) + 1e-6 * I
+    y_outer = np.einsum('...i, ...j->...ij', y, y)
+    P = np.sum(Wc[..., None, None] * y_outer, axis=-3) + \
+        1e-8 * np.eye(state_dim)
 
     return Gaussian(
         mean=mu,
@@ -1060,7 +1065,7 @@ class GraphSearchTrackEnv(gym.Env):
       plt.text(
           search_nodes[i]['position'][0],
           search_nodes[i]['position'][1],
-          f"{norm_weights[i]:.2f}",
+          f"{norm_weights[i]:.2f}\n{search_nodes[i]['covar_diag'][self.pos_inds].sum():.1f}",
           fontsize=8,
           color='white',
           ha='center',

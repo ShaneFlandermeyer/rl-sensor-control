@@ -227,7 +227,6 @@ class GraphSearchTrackEnv(gym.Env):
             len(self.tracker.poisson)//2, len(self.tracker.poisson)
         )
     )
-    self.tracker.poisson.state = self.poisson_survival_reduce()
 
     # Update step
     volume = (self.sensor['beamwidth'] / (2*np.pi)) * \
@@ -887,8 +886,7 @@ class GraphSearchTrackEnv(gym.Env):
       pos_inds: List[int],
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
-      state_dim = len(pos_inds)
-      alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
+      alpha, beta, kappa = 0.25, 2, 0
       x = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
           P=object_state.covar[
@@ -969,42 +967,6 @@ class GraphSearchTrackEnv(gym.Env):
     track_quality = 1 - (traces / self.scenario['max_trace']).clip(0, 1)
     return track_quality
 
-  def poisson_survival_reduce(self) -> Gaussian:
-    # Use sigma points to reduce covariance in regions with low survival prob.
-    # NOTE: The "best" choice for alpha in this case is probably 1/sqrt(state_dim), since that puts the sigma points at the "edges" of the covariance ellipsoid.
-    state_dim = self.tracker.poisson.state.mean.shape[-1]
-    alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
-    sigma_points = merwe_scaled_sigma_points(
-        x=self.tracker.poisson.state.mean,
-        P=self.tracker.poisson.state.covar,
-        alpha=alpha,
-        beta=beta,
-        kappa=kappa
-    )
-    ps = self.ps(
-        object_state=sigma_points,
-        scenario=self.scenario,
-        pos_inds=self.pos_inds
-    )
-
-    Wm, Wc = merwe_sigma_weights(
-        ndim_state=state_dim, alpha=alpha, beta=beta, kappa=kappa
-    )
-    Wm = ps * abs(Wm) / (np.sum(ps * abs(Wm), axis=-1, keepdims=True) + 1e-15)
-    Wc = ps * Wc
-
-    mu = np.sum(Wm[..., None] * sigma_points, axis=-2)
-    y = sigma_points - mu[..., None, :]
-    y_outer = np.einsum('...i, ...j->...ij', y, y)
-    P = np.sum(Wc[..., None, None] * y_outer, axis=-3) + \
-        1e-8 * np.eye(state_dim)
-
-    return Gaussian(
-        mean=mu,
-        covar=P,
-        weight=self.tracker.poisson.state.weight
-    )
-
   def render(self, graph: igraph.Graph = None):
     if graph is None:
       graph = self.graph
@@ -1040,7 +1002,7 @@ class GraphSearchTrackEnv(gym.Env):
 
     # Search nodes
     search_nodes = graph.vs(type_eq='search')
-    nx, ny = 20, 20
+    nx, ny = 50, 50
     search_grid = np.meshgrid(
         np.linspace(*self.scenario['extents'][0], nx),
         np.linspace(*self.scenario['extents'][1], ny)

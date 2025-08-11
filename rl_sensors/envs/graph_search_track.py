@@ -103,7 +103,7 @@ class GraphSearchTrackEnv(gym.Env):
             [-1000, 1000]
         ]),
         max_velocity=10,
-        birth_rate=1/50,
+        birth_rate=1/25,
         clutter_rate=0,
         dt=1.0,
         max_trace=50**2,
@@ -433,41 +433,41 @@ class GraphSearchTrackEnv(gym.Env):
             )[-self.top_k_search_update:]
         ]
 
-        # NOTE: Assumes search nodes have the same ordering as the search grid
-        search_edge_pd = search_pd[detected_search].tolist()
-        search_edge_dist = np.linalg.norm(
-            search_pos[detected_search] - self.sensor['position'], axis=-1
-        ).tolist()
-        search_edge_angles = (
-            np.arctan2(
-                search_pos[detected_search, 1] - self.sensor['position'][1],
-                search_pos[detected_search, 0] - self.sensor['position'][0]
-            ).tolist() +
-            np.arctan2(
-                self.sensor['position'][1] - search_pos[detected_search, 1],
-                self.sensor['position'][0] - search_pos[detected_search, 0]
-            ).tolist()
-        )
+      # NOTE: Assumes search nodes have the same ordering as the search grid
+      search_edge_pd = search_pd[detected_search].tolist()
+      search_edge_dist = np.linalg.norm(
+          search_pos[detected_search] - self.sensor['position'], axis=-1
+      ).tolist()
+      search_edge_angles = (
+          np.arctan2(
+              search_pos[detected_search, 1] - self.sensor['position'][1],
+              search_pos[detected_search, 0] - self.sensor['position'][0]
+          ).tolist() +
+          np.arctan2(
+              self.sensor['position'][1] - search_pos[detected_search, 1],
+              self.sensor['position'][0] - search_pos[detected_search, 0]
+          ).tolist()
+      )
 
-        new_agent_edges.extend([
-            (search_nodes[i]['name'], current_agent_node['name'])
-            for i in detected_search
-        ] + [
-            (current_agent_node['name'], search_nodes[i]['name'])
-            for i in detected_search
-        ])
-        new_agent_edge_features.update(
-            type=new_agent_edge_features['type'] + num_search_edges*['update'],
-            label=new_agent_edge_features['label'] +
-            num_search_edges*[edge_label_map['update']],
-            pd=new_agent_edge_features['pd'] + 2*search_edge_pd,
-            distance=new_agent_edge_features['distance'] + 2*search_edge_dist,
-            angle=new_agent_edge_features['angle'] + search_edge_angles,
-            relative_position=new_agent_edge_features['relative_position'] +
-            num_search_edges*[np.zeros(2)],
-            relative_velocity=new_agent_edge_features['relative_velocity'] +
-            num_search_edges*[np.zeros(2)],
-        )
+      new_agent_edges.extend([
+          (search_nodes[i]['name'], current_agent_node['name'])
+          for i in detected_search
+      ] + [
+          (current_agent_node['name'], search_nodes[i]['name'])
+          for i in detected_search
+      ])
+      new_agent_edge_features.update(
+          type=new_agent_edge_features['type'] + num_search_edges*['update'],
+          label=new_agent_edge_features['label'] +
+          num_search_edges*[edge_label_map['update']],
+          pd=new_agent_edge_features['pd'] + 2*search_edge_pd,
+          distance=new_agent_edge_features['distance'] + 2*search_edge_dist,
+          angle=new_agent_edge_features['angle'] + search_edge_angles,
+          relative_position=new_agent_edge_features['relative_position'] +
+          num_search_edges*[np.zeros(2)],
+          relative_velocity=new_agent_edge_features['relative_velocity'] +
+          num_search_edges*[np.zeros(2)],
+      )
 
     self.graph.add_vertex(**current_agent_node)
     self.graph.add_edges(
@@ -886,7 +886,8 @@ class GraphSearchTrackEnv(gym.Env):
       pos_inds: List[int],
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
-      alpha, beta, kappa = 0.25, 2, 0
+      state_dim = len(pos_inds)
+      alpha, beta, kappa = 0.25/np.sqrt(state_dim), 2, 0
       x = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
           P=object_state.covar[
@@ -925,7 +926,7 @@ class GraphSearchTrackEnv(gym.Env):
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
       state_dim = len(pos_inds)
-      alpha, beta, kappa = 1/np.sqrt(state_dim), 2, 0
+      alpha, beta, kappa = 0.25/np.sqrt(state_dim), 2, 0
       sigma_points = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
           P=object_state.covar[

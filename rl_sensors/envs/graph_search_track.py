@@ -29,14 +29,14 @@ class GraphSearchTrackEnv(gym.Env):
     self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,))
 
     # Search grid config
-    self.nx_grid = 8
-    self.ny_grid = 8
+    self.nx_grid = 5
+    self.ny_grid = 5
     self.n_grid = self.nx_grid * self.ny_grid
     self.max_search_nodes = self.n_grid
 
     # Agent config
     self.max_agent_nodes = 20
-    self.top_k_search_update = 4
+    self.top_k_search_update = 5
 
     # Track config
     self.max_track_history = 3
@@ -140,7 +140,7 @@ class GraphSearchTrackEnv(gym.Env):
         noise_type='continuous',
     )
     self.measurement_model = Radar2D(
-        covar=np.diag([10, 1*np.pi/180, 1])**2,
+        covar=np.diag([5, 1*np.pi/180, 1])**2,
         pos_inds=self.pos_inds,
         vel_inds=self.vel_inds,
     )
@@ -208,8 +208,10 @@ class GraphSearchTrackEnv(gym.Env):
 
     # Update simulation
     self.update_sensor_state(action)
-    self.update_ground_truth(dt=self.scenario['dt'])
-    measurements = self.measure()
+    self.update_ground_truth(dt=self.scenario['dt'], noise=True)
+    measurements = self.measure(
+        states=np.array([path[-1] for path in self.ground_truth])
+    )
 
     # Predict step
     self.tracker = self.tracker.predict(
@@ -791,11 +793,11 @@ class GraphSearchTrackEnv(gym.Env):
     self.sensor['steering_angle'] = action[0] * np.pi
     self.sensor['action'] = action
 
-  def update_ground_truth(self, dt: float) -> None:
+  def update_ground_truth(self, dt: float, noise: bool = True) -> None:
     if len(self.ground_truth) > 0:
-      states = np.atleast_2d([x[-1] for x in self.ground_truth])
+      states = np.atleast_2d([path[-1] for path in self.ground_truth])
       next_states = self.transition_model(
-          states, dt=dt, noise=True, rng=self.np_random
+          states, dt=dt, noise=noise, rng=self.np_random
       )
 
       # Object survival
@@ -821,7 +823,7 @@ class GraphSearchTrackEnv(gym.Env):
           p=birth_distribution.weight / np.sum(birth_distribution.weight)
       )
       new_states = birth_distribution[inds].sample(
-          num_points=1, rng=self.np_random, max_distance=1,
+          num_points=1, rng=self.np_random 
       )
       # Clip to scenario extents
       new_states[..., self.pos_inds] = np.clip(
@@ -831,51 +833,49 @@ class GraphSearchTrackEnv(gym.Env):
       )
       self.ground_truth.extend([list(state) for state in new_states])
 
-  def measure(self) -> np.ndarray:
-    if len(self.ground_truth) == 0:
-      return []
-
+  def measure(self, states: np.ndarray, noise: bool = True) -> np.ndarray:
     # Object measurements
-    states = np.array([path[-1] for path in self.ground_truth])
-    pd = self.pd(states, sensor=self.sensor, pos_inds=self.pos_inds)
-    detected = self.np_random.uniform(size=len(self.ground_truth)) < pd
-    if np.any(detected):
-      Z = self.measurement_model(
-          states[detected],
-          sensor_pos=self.sensor['position'],
-          sensor_vel=self.sensor['velocity'],
-          noise=True,
-          rng=self.np_random
-      )
+    if len(states) > 0:
+      pd = self.pd(states, sensor=self.sensor, pos_inds=self.pos_inds)
+      detected = self.np_random.uniform(size=len(self.ground_truth)) < pd
+      if np.any(detected):
+        Z = self.measurement_model(
+            states[detected],
+            sensor_pos=self.sensor['position'],
+            sensor_vel=self.sensor['velocity'],
+            noise=noise,
+            rng=self.np_random
+        )
+      else:
+        Z = np.empty((0, 2))
     else:
       Z = np.empty((0, 2))
 
     # Clutter measurements
-    Z_clutter = self.measure_clutter()
-    if len(Z_clutter) > 0:
+    if self.scenario['clutter_rate'] > 0:
+      Z_clutter = self.measure_clutter()
       Z = np.concatenate([Z, Z_clutter], axis=0)
 
     return Z
 
   def measure_clutter(self) -> np.ndarray:
-    if self.scenario['clutter_rate'] > 0:
-      num_clutter = self.np_random.poisson(
-          lam=self.scenario['clutter_rate'] * self.scenario['dt']
+    num_clutter = self.np_random.poisson(
+        lam=self.scenario['clutter_rate'] * self.scenario['dt']
+    )
+    if num_clutter > 0:
+      clutter_range = self.np_random.uniform(
+          low=100, high=self.sensor['max_range'], size=num_clutter
       )
-      if num_clutter > 0:
-        clutter_range = self.np_random.uniform(
-            low=100, high=self.sensor['max_range'], size=num_clutter
-        )
-        clutter_angle = self.np_random.uniform(
-            low=self.sensor['steering_angle'] - self.sensor['beamwidth']/2,
-            high=self.sensor['steering_angle'] + self.sensor['beamwidth']/2,
-            size=num_clutter
-        )
-        Z = self.sensor['position'] + np.array([
-            clutter_range * np.cos(clutter_angle),
-            clutter_range * np.sin(clutter_angle),
-        ]).T
-        return Z
+      clutter_angle = self.np_random.uniform(
+          low=self.sensor['steering_angle'] - self.sensor['beamwidth']/2,
+          high=self.sensor['steering_angle'] + self.sensor['beamwidth']/2,
+          size=num_clutter
+      )
+      Z = self.sensor['position'] + np.array([
+          clutter_range * np.cos(clutter_angle),
+          clutter_range * np.sin(clutter_angle),
+      ]).T
+      return Z
 
     return np.empty((0, 2))
 
@@ -948,6 +948,7 @@ class GraphSearchTrackEnv(gym.Env):
               sigma_points[..., 1] <= scenario['extents'][1][1],
           ]), 0.999, 0
       )
+      
       return np.average(ps, weights=weights, axis=-1)
     else:
       return np.where(

@@ -887,7 +887,7 @@ class GraphSearchTrackEnv(gym.Env):
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
       state_dim = len(pos_inds)
-      alpha, beta, kappa = 0.25/np.sqrt(state_dim), 2, 0
+      alpha, beta, kappa = 0.33/np.sqrt(state_dim), 2, 0
       x = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
           P=object_state.covar[
@@ -926,7 +926,7 @@ class GraphSearchTrackEnv(gym.Env):
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
       state_dim = len(pos_inds)
-      alpha, beta, kappa = 0.25/np.sqrt(state_dim), 2, 0
+      alpha, beta, kappa = 0.33/np.sqrt(state_dim), 2, 0
       sigma_points = merwe_scaled_sigma_points(
           x=object_state.mean[:, pos_inds],
           P=object_state.covar[

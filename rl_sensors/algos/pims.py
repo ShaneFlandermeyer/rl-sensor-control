@@ -11,16 +11,15 @@ from motpy.rfs.tomb import TOMBP
 
 from rl_sensors.envs.util import merge_poisson
 
-# ASSUMPTIONS:
-# pd(x) = pd(E[x])
-# ps(x) = ps(E[x])
-# Objects in FOV generate a noise-free measurement
-# No false alarms
 
+def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
+  # ASSUMPTIONS:
+  # pd(x) = pd(E[x])
+  # ps(x) = ps(E[x])
+  # Objects in FOV generate a noise-free measurement
+  # No false alarms
 
-def simulate_ideal(env: gym.Env, tracker: TOMBP, actions: np.ndarray):
-
-  for action in actions:
+  for action in action_seq:
     # Update sensor
     env.update_sensor_state(action)
 
@@ -32,15 +31,6 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, actions: np.ndarray):
             env.ps, scenario=env.scenario, pos_inds=env.pos_inds
         ),
     )
-    tracker.poisson, tracker.poisson_metadata = merge_poisson(
-        distribution=tracker.poisson,
-        metadata=tracker.poisson_metadata,
-        source_inds=np.arange(len(tracker.poisson)//2),
-        target_inds=np.arange(
-            len(tracker.poisson)//2, len(tracker.poisson)
-        )
-    )
-
     # Update step
     poisson_pd = env.pd(
         object_state=tracker.poisson.state.mean,
@@ -75,9 +65,39 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, actions: np.ndarray):
   if len(tracker.mb) == 0:
     track_score = 0
   else:
-    track_score = env.track_quality(tracker.mb)
+    track_score = env.track_quality(tracker.mb).sum()
   score = search_score + track_score
   return score
+
+
+def plan_pims(
+    env: gym.Env,
+    N: int = 10,
+    H: int = 1,
+    r_th: float = 0.1
+) -> np.ndarray:
+  # Create action array
+  A = np.prod(env.action_space.shape)
+  actions = np.array(
+      np.meshgrid(
+          *[
+              [np.linspace(-1, 1, N) for _ in range(A)]
+              for _ in range(H)
+          ]
+      )
+  ).reshape(-1, H, A)
+
+  # 
+  state = copy.deepcopy(env.tracker)
+  if len(state.mb) > 0:
+    state.mb, _ = state.mb.prune(valid_fn=lambda mb: mb.r > r_th)
+
+  # Plan
+  scores = np.zeros(actions.shape[0])
+  for i, action in enumerate(actions):
+    scores[i] = simulate_ideal(env=env, tracker=state, action_seq=action)
+  best_score, best_action = np.max(scores), actions[np.argmax(scores), 0, :]
+  return best_score, best_action
 
 
 if __name__ == '__main__':
@@ -89,24 +109,14 @@ if __name__ == '__main__':
   # Configure environment
   env = GraphSearchTrackEnv()
   env.reset(seed=seed)
-
-  # Plan
-  A = 1 # Action space dimension
-  H = 1 # Planning horizon
-  N = 10 # Number of discrete action bins
-  start = time.time()
-  actions = np.array(
-      np.meshgrid(
-          *[
-              [np.linspace(-1, 1, N) for _ in range(A)]
-              for _ in range(H)
-          ]
-      )
-  ).reshape(-1, H, A)
-  state = copy.deepcopy(env.tracker)
-  for action in actions:
-    score = simulate_ideal(env=env, tracker=state, actions=action)
-    print(score)
-
-  stop = time.time()
-  print(f"Planning took {1e3*(stop - start):.1f} ms")
+ 
+  for _ in range(5):
+    total_r = 0
+    for i in range(1000):
+      # env.render()
+      # print(i)
+      score, a_star = plan_pims(env=env, N=30, H=1, r_th=1e-2)
+      obs, reward, term, trunc, info = env.step(a_star)
+      total_r += reward
+    print(total_r)
+    env.reset()

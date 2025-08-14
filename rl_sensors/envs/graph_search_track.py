@@ -625,12 +625,14 @@ class GraphSearchTrackEnv(gym.Env):
             2*[np.zeros(2)],
         )
 
-        # Track graph pruning
+        # Prune the track history
         track_history(measurement_type_eq='predict')['delete'] = True
         if track_measurement_type == 'update':
           track_history(measurement_type_eq='miss')['delete'] = True
-        if len(track_history) >= self.max_track_history:
-          track_history[:-(self.max_track_history-1)]['delete'] = True
+
+        persistent_history = track_history(delete_in=[False, None])
+        if len(persistent_history) > self.max_track_history-1:
+          persistent_history[:-(self.max_track_history-1)]['delete'] = True
 
       # Add track nodes and edges
       self.graph.add_vertices(n=num_tracks, attributes=new_track_nodes)
@@ -823,7 +825,7 @@ class GraphSearchTrackEnv(gym.Env):
           p=birth_distribution.weight / np.sum(birth_distribution.weight)
       )
       new_states = birth_distribution[inds].sample(
-          num_points=1, rng=self.np_random 
+          num_points=1, rng=self.np_random
       )
       # Clip to scenario extents
       new_states[..., self.pos_inds] = np.clip(
@@ -948,7 +950,6 @@ class GraphSearchTrackEnv(gym.Env):
               sigma_points[..., 1] <= scenario['extents'][1][1],
           ]), 0.999, 0
       )
-      
       return np.average(ps, weights=weights, axis=-1)
     else:
       return np.where(

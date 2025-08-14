@@ -19,6 +19,7 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
   # Objects in FOV generate a noise-free measurement
   # No false alarms
 
+  score = 0
   for action in action_seq:
     # Update sensor
     env.update_sensor_state(action)
@@ -60,13 +61,13 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
             sensor_vel=env.sensor['velocity'],
         )
 
-  # Planning score
-  search_score = -tracker.poisson.state.weight.sum()
-  if len(tracker.mb) == 0:
-    track_score = 0
-  else:
-    track_score = env.track_quality(tracker.mb).sum()
-  score = search_score + track_score
+    # Planning score
+    search_score = -tracker.poisson.state.weight.sum()
+    if len(tracker.mb) == 0:
+      track_score = 0
+    else:
+      track_score = env.track_quality(tracker.mb).sum()
+    score += (search_score + track_score)
   return score
 
 

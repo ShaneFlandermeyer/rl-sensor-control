@@ -934,7 +934,7 @@ class GraphSearchTrackEnv(gym.Env):
     )
     angle_diff = np.mod((az - steering_angle) + np.pi, 2*np.pi) - np.pi
     in_region = abs(angle_diff) <= beamwidth/2
-    pd = np.where(in_region, 0., 0)
+    pd = np.where(in_region, 0.9, 0)
     return np.average(pd, weights=weights, axis=-1)
 
   @staticmethod

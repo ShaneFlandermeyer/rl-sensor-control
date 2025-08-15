@@ -16,6 +16,7 @@ from motpy.models.transition import ConstantVelocity
 from motpy.rfs.bernoulli import MultiBernoulli
 from motpy.rfs.poisson import Poisson
 from motpy.rfs.tomb import TOMBP
+from motpy.distributions.gaussian import uniform_sample_ellipse
 
 from rl_sensors.envs.util import merge_poisson
 
@@ -36,7 +37,7 @@ class GraphSearchTrackEnv(gym.Env):
 
     # Agent config
     self.max_agent_nodes = 20
-    self.top_k_search_update = 5
+    self.top_k_search_update = 4
 
     # Track config
     self.max_track_history = 3
@@ -159,8 +160,8 @@ class GraphSearchTrackEnv(gym.Env):
     ymin, ymax = self.scenario['extents'][1]
     dx = 0.5*(xmax - xmin) / self.nx_grid
     dy = 0.5*(ymax - ymin) / self.ny_grid
-    x = np.linspace(xmin, xmax, self.nx_grid)
-    y = np.linspace(ymin, ymax, self.ny_grid)
+    x = np.linspace(xmin+dx, xmax-dy, self.nx_grid)
+    y = np.linspace(ymin+dy, ymax-dy, self.ny_grid)
     dvx = dvy = self.scenario['max_velocity']
     grid_x, grid_y = np.meshgrid(x, y, indexing='ij')
     grid_x, grid_y = grid_x.ravel(), grid_y.ravel()
@@ -218,7 +219,10 @@ class GraphSearchTrackEnv(gym.Env):
         state_estimator=self.state_estimator,
         dt=self.scenario['dt'],
         ps_model=functools.partial(
-            self.ps, scenario=self.scenario, pos_inds=self.pos_inds
+            self.ps,
+            scenario=self.scenario,
+            pos_inds=self.pos_inds,
+            rng=self.np_random,
         ),
     )
     self.tracker.poisson, self.tracker.poisson_metadata = merge_poisson(
@@ -237,10 +241,14 @@ class GraphSearchTrackEnv(gym.Env):
         measurements=measurements,
         state_estimator=self.state_estimator,
         pd_model=functools.partial(
-            self.pd, sensor=self.sensor, pos_inds=self.pos_inds
+            self.pd,
+            sensor=self.sensor,
+            pos_inds=self.pos_inds,
+            rng=self.np_random
         ),
         lambda_fa=self.scenario['clutter_rate'] / volume,
         pg=self.scenario['pg'],
+        min_poisson_pd=0.1,
         sensor_pos=self.sensor['position'],
         sensor_vel=self.sensor['velocity'],
     )
@@ -263,6 +271,7 @@ class GraphSearchTrackEnv(gym.Env):
           object_state=self.tracker.mb.state,
           sensor=self.sensor,
           pos_inds=self.pos_inds,
+          rng=self.np_random,
       )
       for i, meta in enumerate(self.tracker.mb_metadata):
         if meta['new']:
@@ -486,9 +495,6 @@ class GraphSearchTrackEnv(gym.Env):
     #################################
     # Track nodes
     #################################
-    # TODO: Prioritize tracks when at max capacity
-    # 1. Initiated tracks (just the first N if this is also over capacity)
-    # 2. Undetected tracks according to initiation progress
     if len(self.tracker.mb) > 0 and self.max_active_tracks > 0:
       # Delete stale track nodes
       track_ids = [meta['id'] for meta in self.tracker.mb_metadata]
@@ -807,6 +813,7 @@ class GraphSearchTrackEnv(gym.Env):
           object_state=next_states,
           scenario=self.scenario,
           pos_inds=self.pos_inds,
+          rng=self.np_random,
       )
       survived = self.np_random.uniform(size=len(self.ground_truth)) < ps
       for i, path in enumerate(self.ground_truth.copy()):
@@ -838,7 +845,12 @@ class GraphSearchTrackEnv(gym.Env):
   def measure(self, states: np.ndarray, noise: bool = True) -> np.ndarray:
     # Object measurements
     if len(states) > 0:
-      pd = self.pd(states, sensor=self.sensor, pos_inds=self.pos_inds)
+      pd = self.pd(
+          states,
+          sensor=self.sensor,
+          pos_inds=self.pos_inds,
+          rng=self.np_random,
+      )
       detected = self.np_random.uniform(size=len(self.ground_truth)) < pd
       if np.any(detected):
         Z = self.measurement_model(
@@ -881,28 +893,33 @@ class GraphSearchTrackEnv(gym.Env):
 
     return np.empty((0, 2))
 
+  def track_quality(self, tracks: MultiBernoulli) -> np.ndarray:
+    """Compute track quality based on trace of covariance."""
+    covars = tracks.state.covar[
+        np.ix_(np.arange(len(tracks)), self.pos_inds, self.pos_inds)
+    ]
+    traces = np.linalg.trace(covars)
+    track_quality = 1 - (traces / self.scenario['max_trace']).clip(0, 1)
+    return track_quality
+
   @staticmethod
   def pd(
       object_state: Union[np.ndarray, Gaussian],
       sensor: Dict[str, Any],
       pos_inds: List[int],
+      rng: np.random.Generator,
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
-      state_dim = len(pos_inds)
-      alpha, beta, kappa = 0.1/np.sqrt(state_dim), 2, 0
-      x = merwe_scaled_sigma_points(
-          x=object_state.mean[:, pos_inds],
-          P=object_state.covar[
-              np.ix_(np.arange(object_state.shape[0]), pos_inds, pos_inds)
-          ],
-          alpha=alpha,
-          beta=beta,
-          kappa=kappa
+      n = 50
+      x = uniform_sample_ellipse(
+          n=n,
+          mean=object_state.mean[..., pos_inds],
+          covar=(1/3)**2 * object_state.covar[np.ix_(
+              np.arange(object_state.shape[0]), pos_inds, pos_inds
+          )],
+          rng=rng,
       )
-      weights = merwe_sigma_weights(
-          ndim_state=len(pos_inds), alpha=alpha, beta=beta, kappa=kappa
-      )[0]
-      weights = abs(weights) / abs(weights).sum()
+      weights = np.full(x.shape[:-1], 1/n)
     else:
       x = object_state[..., None, pos_inds]
       weights = np.ones(1)
@@ -917,7 +934,7 @@ class GraphSearchTrackEnv(gym.Env):
     )
     angle_diff = np.mod((az - steering_angle) + np.pi, 2*np.pi) - np.pi
     in_region = abs(angle_diff) <= beamwidth/2
-    pd = np.where(in_region, 0.9, 0)
+    pd = np.where(in_region, 0., 0)
     return np.average(pd, weights=weights, axis=-1)
 
   @staticmethod
@@ -925,29 +942,25 @@ class GraphSearchTrackEnv(gym.Env):
       object_state: Union[np.ndarray, Gaussian],
       scenario: Dict[str, Any],
       pos_inds: List[int],
+      rng: np.random.Generator,
   ) -> np.ndarray:
     if isinstance(object_state, Gaussian):
-      state_dim = len(pos_inds)
-      alpha, beta, kappa = 0.25/np.sqrt(state_dim), 2, 0
-      sigma_points = merwe_scaled_sigma_points(
-          x=object_state.mean[:, pos_inds],
-          P=object_state.covar[
-              np.ix_(np.arange(object_state.shape[0]), pos_inds, pos_inds)
-          ],
-          alpha=alpha,
-          beta=beta,
-          kappa=kappa
+      n = 50
+      x = uniform_sample_ellipse(
+          n=n,
+          mean=object_state.mean[..., pos_inds],
+          covar=(1/3)**2 * object_state.covar[np.ix_(
+              np.arange(object_state.shape[0]), pos_inds, pos_inds
+          )],
+          rng=rng,
       )
-      weights = merwe_sigma_weights(
-          ndim_state=len(pos_inds), alpha=alpha, beta=beta, kappa=kappa
-      )[0]
-      weights = abs(weights) / abs(weights).sum()
+      weights = np.full(x.shape[:-1], 1/n)
       ps = np.where(
           np.logical_and.reduce([
-              sigma_points[..., 0] >= scenario['extents'][0][0],
-              sigma_points[..., 0] <= scenario['extents'][0][1],
-              sigma_points[..., 1] >= scenario['extents'][1][0],
-              sigma_points[..., 1] <= scenario['extents'][1][1],
+              x[..., 0] >= scenario['extents'][0][0],
+              x[..., 0] <= scenario['extents'][0][1],
+              x[..., 1] >= scenario['extents'][1][0],
+              x[..., 1] <= scenario['extents'][1][1],
           ]), 0.999, 0
       )
       return np.average(ps, weights=weights, axis=-1)

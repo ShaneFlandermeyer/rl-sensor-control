@@ -29,7 +29,10 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
         state_estimator=env.state_estimator,
         dt=env.scenario['dt'],
         ps_model=functools.partial(
-            env.ps, scenario=env.scenario, pos_inds=env.pos_inds
+            env.ps,
+            scenario=env.scenario, 
+            pos_inds=env.pos_inds,
+            rng=np.random.default_rng()
         ),
     )
     # Update step
@@ -37,6 +40,7 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
         object_state=tracker.poisson.state.mean,
         sensor=env.sensor,
         pos_inds=env.pos_inds,
+        rng=np.random.default_rng(),
     )
     tracker.poisson.state.weight *= (1 - poisson_pd)
 
@@ -45,6 +49,7 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
           object_state=tracker.mb.state.mean,
           sensor=env.sensor,
           pos_inds=env.pos_inds,
+          rng=np.random.default_rng(),
       )
       updated_mb_inds = np.where(pred_mb_pd > 0)[0]
       measurements = env.state_estimator.measurement_model(
@@ -104,20 +109,27 @@ def plan_pims(
 if __name__ == '__main__':
   import time
 
-  seed = 0
+  seed = 42
   np.random.seed(seed)
 
   # Configure environment
   env = GraphSearchTrackEnv()
   env.reset(seed=seed)
  
-  for _ in range(5):
+  num_ep = 10
+  num_steps = 1000
+  mean_r = 0
+  for iep in range(num_ep):
     total_r = 0
-    for i in range(1000):
-      # env.render()
-      # print(i)
-      score, a_star = plan_pims(env=env, N=30, H=1, r_th=1e-2)
-      obs, reward, term, trunc, info = env.step(a_star)
-      total_r += reward
-    print(total_r)
     env.reset()
+    for i in range(num_steps):
+      env.render()
+      score, action = plan_pims(env=env, N=20, H=1, r_th=1e-2)
+      # action = np.array([1/4])
+      obs, reward, term, trunc, info = env.step(action)
+      print(env.tracker.poisson.state.weight.sum())
+      total_r += reward
+    print(iep, total_r)
+    mean_r += total_r / num_ep
+    
+  print(mean_r)

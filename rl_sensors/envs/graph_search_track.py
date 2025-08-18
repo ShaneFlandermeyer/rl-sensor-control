@@ -117,6 +117,7 @@ class GraphSearchTrackEnv(gym.Env):
         beamwidth=20*np.pi/180,
         steering_angle=0,
         action=np.zeros(1),
+        max_range=1500,
     )
 
     self.ground_truth = []
@@ -173,13 +174,26 @@ class GraphSearchTrackEnv(gym.Env):
     )
 
     # Initial undetected distribution
-    init_wsum = self.np_random.uniform(1, 5)
-    undetected_weight = self.np_random.uniform(0, 1, size=self.n_grid)
+    init_num_objects = 1
     undetected_state = Gaussian(
         mean=birth_means,
         covar=birth_covars,
-        weight=init_wsum * (undetected_weight / undetected_weight.sum())
+        weight=np.full(self.n_grid, init_num_objects / self.n_grid)
     )
+    init_ground_truth_inds = self.np_random.choice(
+        a=np.arange(birth_distribution.shape[0]),
+        size=init_num_objects,
+        p=birth_distribution.weight / np.sum(birth_distribution.weight)
+    )
+    init_ground_truth = birth_distribution[init_ground_truth_inds].sample(
+        num_points=1, rng=self.np_random
+    )
+    init_ground_truth[..., self.pos_inds] = np.clip(
+        init_ground_truth[..., self.pos_inds],
+        self.scenario['extents'][:, 0],
+        self.scenario['extents'][:, 1]
+    )
+    self.ground_truth = [list(state) for state in init_ground_truth]
 
     self.tracker = TOMBP(
         poisson=Poisson(state=undetected_state),
@@ -228,7 +242,8 @@ class GraphSearchTrackEnv(gym.Env):
     )
 
     # Update step
-    volume = np.prod(np.diff(self.scenario['extents'], axis=-1).ravel())
+    volume = (self.sensor['beamwidth'] / (2*np.pi)) * \
+        (np.pi * self.sensor['max_range']**2)
     self.tracker = self.tracker.update(
         measurements=measurements,
         state_estimator=self.state_estimator,
@@ -554,10 +569,10 @@ class GraphSearchTrackEnv(gym.Env):
         if len(track_history) > 0:
           track_pos = track_node_attributes['position'][i]
           track_vel = track_node_attributes['velocity'][i]
-
+          last_update = track_history(measurement_type_in=['update', 'miss'])[-1]
           track_edges.extend([
-              (track_history[-1]['name'], track_node_name),
-              (track_node_name, track_history[-1]['name'])
+              (last_update['name'], track_node_name),
+              (track_node_name, last_update['name'])
           ])
           track_edge_attributes.update(
               type=track_edge_attributes['type'] +
@@ -569,12 +584,12 @@ class GraphSearchTrackEnv(gym.Env):
               distance=track_edge_attributes['distance'] + [0.0, 0.0],
               angle=track_edge_attributes['angle'] + [0.0, 0.0],
               relative_position=track_edge_attributes['relative_position'] + [
-                  track_history[-1]['position'] - track_pos,
-                  track_pos - track_history[-1]['position'],
+                  last_update['position'] - track_pos,
+                  track_pos - last_update['position'],
               ],
               relative_velocity=track_edge_attributes['relative_velocity'] + [
-                  track_history[-1]['velocity'] - track_vel,
-                  track_vel - track_history[-1]['velocity'],
+                  last_update['velocity'] - track_vel,
+                  track_vel - last_update['velocity'],
               ],
           )
 

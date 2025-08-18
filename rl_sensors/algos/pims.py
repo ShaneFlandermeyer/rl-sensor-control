@@ -30,9 +30,9 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
         dt=env.scenario['dt'],
         ps_model=functools.partial(
             env.ps,
-            scenario=env.scenario, 
+            scenario=env.scenario,
             pos_inds=env.pos_inds,
-            rng=np.random.default_rng()
+            rng=rng,
         ),
     )
     # Update step
@@ -40,7 +40,7 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
         object_state=tracker.poisson.state.mean,
         sensor=env.sensor,
         pos_inds=env.pos_inds,
-        rng=np.random.default_rng(),
+        rng=rng,
     )
     tracker.poisson.state.weight *= (1 - poisson_pd)
 
@@ -49,7 +49,7 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
           object_state=tracker.mb.state.mean,
           sensor=env.sensor,
           pos_inds=env.pos_inds,
-          rng=np.random.default_rng(),
+          rng=rng,
       )
       updated_mb_inds = np.where(pred_mb_pd > 0)[0]
       measurements = env.state_estimator.measurement_model(
@@ -57,6 +57,7 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
           noise=False,
           sensor_pos=env.sensor['position'],
           sensor_vel=env.sensor['velocity'],
+          rng=rng,
       )
       for iz, imb in enumerate(updated_mb_inds):
         tracker.mb.state[imb] = env.state_estimator.update(
@@ -78,9 +79,10 @@ def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
 
 def plan_pims(
     env: gym.Env,
-    N: int = 10,
-    H: int = 1,
-    r_th: float = 0.1
+    N: int,
+    H: int,
+    r_th: float,
+    rng: np.random.RandomState,
 ) -> np.ndarray:
   # Create action array
   A = np.prod(env.action_space.shape)
@@ -93,7 +95,6 @@ def plan_pims(
       )
   ).reshape(-1, H, A)
 
-  # 
   state = copy.deepcopy(env.tracker)
   if len(state.mb) > 0:
     state.mb, _ = state.mb.prune(valid_fn=lambda mb: mb.r > r_th)
@@ -101,7 +102,9 @@ def plan_pims(
   # Plan
   scores = np.zeros(actions.shape[0])
   for i, action in enumerate(actions):
-    scores[i] = simulate_ideal(env=env, tracker=state, action_seq=action)
+    scores[i] = simulate_ideal(
+        env=env, tracker=state, action_seq=action, rng=rng
+    )
   best_score, best_action = np.max(scores), actions[np.argmax(scores), 0, :]
   return best_score, best_action
 

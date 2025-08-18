@@ -12,6 +12,7 @@ from motpy.estimators.kalman.sigma_points import (merwe_scaled_sigma_points,
                                                   merwe_sigma_weights)
 from motpy.estimators.kalman.ukf import UnscentedKalmanFilter
 from motpy.models.measurement import LinearMeasurementModel
+from motpy.models.measurement.radar import Radar2D
 from motpy.models.transition import ConstantVelocity
 from motpy.rfs.bernoulli import MultiBernoulli
 from motpy.rfs.poisson import Poisson
@@ -131,18 +132,18 @@ class GraphSearchTrackEnv(gym.Env):
         velocity_inds=self.vel_inds,
         noise_type='continuous',
     )
-    self.measurement_model = LinearMeasurementModel(
-        state_dim=4,
-        covar=1*np.eye(2),
-        measured_dims=self.pos_inds,
+    self.measurement_model = Radar2D(
+        covar=np.diag([5, 1*np.pi/180, 1])**2,
+        pos_inds=self.pos_inds,
+        vel_inds=self.vel_inds,
     )
     self.state_estimator = UnscentedKalmanFilter(
         transition_model=self.transition_model,
         measurement_model=self.measurement_model,
         state_subtract_fn=np.subtract,
         state_average_fn=np.average,
-        measurement_subtract_fn=np.subtract,
-        measurement_average_fn=np.average,
+        measurement_subtract_fn=Radar2D.subtract_fn,
+        measurement_average_fn=Radar2D.average_fn,
         sigma_params=dict(alpha=1e-3, beta=2, kappa=0),
     )
 
@@ -260,6 +261,9 @@ class GraphSearchTrackEnv(gym.Env):
         ),
         lambda_fa=self.scenario['clutter_rate'] / volume,
         pg=0.999,
+        min_poisson_pd=0.1,
+        sensor_pos=self.sensor['position'],
+        sensor_vel=self.sensor['velocity'],
     )
     if len(self.tracker.mb) > 0:
       self.tracker.mb, self.tracker.mb_metadata = self.tracker.mb.prune(
@@ -574,11 +578,11 @@ class GraphSearchTrackEnv(gym.Env):
         if len(track_history) > 0:
           track_pos = track_node_attributes['position'][i]
           track_vel = track_node_attributes['velocity'][i]
-          last_updates = track_history(
+          update_history = track_history(
               measurement_type_in=['update', 'miss']
           )
-          if len(last_updates) > 0:
-            last_update = last_updates[-1]
+          if len(update_history) > 0:
+            last_update = update_history[-1]
             track_edges.extend([
                 (last_update['name'], track_node_name),
                 (track_node_name, last_update['name'])
@@ -848,7 +852,13 @@ class GraphSearchTrackEnv(gym.Env):
 
     # Measure
     states = np.array([path[-1] for path in self.ground_truth])
-    Z = self.measurement_model(states, noise=True, rng=self.np_random)
+    Z = self.measurement_model(
+        states,
+        noise=True,
+        rng=self.np_random,
+        sensor_pos=self.sensor['position'],
+        sensor_vel=self.sensor['velocity'],
+    )
 
     # Only keep detected measurements
     pd = self.pd(

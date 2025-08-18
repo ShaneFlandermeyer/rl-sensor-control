@@ -574,31 +574,33 @@ class GraphSearchTrackEnv(gym.Env):
         if len(track_history) > 0:
           track_pos = track_node_attributes['position'][i]
           track_vel = track_node_attributes['velocity'][i]
-          last_update = track_history(
+          last_updates = track_history(
               measurement_type_in=['update', 'miss']
-          )[-1]
-          track_edges.extend([
-              (last_update['name'], track_node_name),
-              (track_node_name, last_update['name'])
-          ])
-          track_edge_attributes.update(
-              type=track_edge_attributes['type'] +
-              ['transition', 'transition'],
-              label=track_edge_attributes['label'] + 2*[
-                  edge_label_map['transition']
-              ],
-              pd=track_edge_attributes['pd'] + [0.0, 0.0],
-              distance=track_edge_attributes['distance'] + [0.0, 0.0],
-              angle=track_edge_attributes['angle'] + [0.0, 0.0],
-              relative_position=track_edge_attributes['relative_position'] + [
-                  last_update['position'] - track_pos,
-                  track_pos - last_update['position'],
-              ],
-              relative_velocity=track_edge_attributes['relative_velocity'] + [
-                  last_update['velocity'] - track_vel,
-                  track_vel - last_update['velocity'],
-              ],
           )
+          if len(last_updates) > 0:
+            last_update = last_updates[-1]
+            track_edges.extend([
+                (last_update['name'], track_node_name),
+                (track_node_name, last_update['name'])
+            ])
+            track_edge_attributes.update(
+                type=track_edge_attributes['type'] +
+                ['transition', 'transition'],
+                label=track_edge_attributes['label'] + 2*[
+                    edge_label_map['transition']
+                ],
+                pd=track_edge_attributes['pd'] + [0.0, 0.0],
+                distance=track_edge_attributes['distance'] + [0.0, 0.0],
+                angle=track_edge_attributes['angle'] + [0.0, 0.0],
+                relative_position=track_edge_attributes['relative_position'] + [
+                    last_update['position'] - track_pos,
+                    track_pos - last_update['position'],
+                ],
+                relative_velocity=track_edge_attributes['relative_velocity'] + [
+                    last_update['velocity'] - track_vel,
+                    track_vel - last_update['velocity'],
+                ],
+            )
 
         # Measurement update/miss edge
         track_pd = self.tracker.mb_metadata[i]['pd']

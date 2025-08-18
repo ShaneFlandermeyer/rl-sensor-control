@@ -106,8 +106,8 @@ class PGAT(nn.Module):
     # Pre-processing
     skip = query
     if self.normalize_inputs:
-      query = nn.LayerNorm()(query)
-      key = nn.LayerNorm()(key)
+      query = nn.LayerNorm(dtype=self.dtype)(query)
+      key = nn.LayerNorm(dtype=self.dtype)(key)
     query = nn.Dense(
         self.embed_dim,
         name='W_query',
@@ -146,7 +146,9 @@ class PGAT(nn.Module):
     # Softmax weights
     logits = jnp.where(mask[..., None], logits, jnp.finfo(logits.dtype).min)
     weights = jax.nn.softmax(logits.astype(jnp.float32), axis=-2)
-    x = jnp.einsum('... m n h, ... n h d -> ... m h d', weights, key)
+    x = jnp.einsum(
+        '... m n h, ... n h d -> ... m h d', weights, key
+    ).astype(self.dtype)
 
     x = rearrange(x, '... h d -> ... (h d)', h=self.num_heads)
     if self.residual:

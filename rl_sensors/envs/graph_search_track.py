@@ -225,7 +225,9 @@ class GraphSearchTrackEnv(gym.Env):
     # Update simulation
     self.update_sensor_state(action)
     self.update_ground_truth(dt=self.scenario['dt'])
-    measurements = self.measure()
+    measurements = self.measure(
+        states=np.array([path[-1] for path in self.ground_truth])
+    )
 
     # Predict step
     self.tracker = self.tracker.predict(
@@ -819,7 +821,7 @@ class GraphSearchTrackEnv(gym.Env):
           pos_inds=self.pos_inds,
           rng=self.np_random,
       )
-      survived = ps > 0  # Only actually die outside scenario region
+      survived = self.np_random.uniform(size=len(self.ground_truth)) < ps
       for i, path in enumerate(self.ground_truth.copy()):
         if survived[i]:
           path.append(next_states[i])
@@ -846,27 +848,53 @@ class GraphSearchTrackEnv(gym.Env):
       )
       self.ground_truth.extend([list(state) for state in new_states])
 
-  def measure(self) -> List[np.ndarray]:
-    if len(self.ground_truth) == 0:
-      return []
+  def measure(self, states: np.ndarray, noise: bool = True) -> np.ndarray:
+    Z = np.zeros((0, 2))
 
-    # Measure
-    states = np.array([path[-1] for path in self.ground_truth])
-    Z = self.measurement_model(
-        states,
-        noise=True,
-        rng=self.np_random,
-        sensor_pos=self.sensor['position'],
-        sensor_vel=self.sensor['velocity'],
+    # Object measurements
+    if len(states) > 0:
+      pd = self.pd(
+          states,
+          sensor=self.sensor,
+          pos_inds=self.pos_inds,
+          rng=self.np_random
+      )
+      detected = self.np_random.uniform(size=len(self.ground_truth)) < pd
+      if np.any(detected):
+        Z = self.measurement_model(
+            states[detected],
+            noise=noise,
+            rng=self.np_random,
+            sensor_pos=self.sensor['position'],
+            sensor_vel=self.sensor['velocity'],
+        )
+
+    # Clutter measurements
+    if self.scenario['clutter_rate'] > 0:
+      Z_clutter = self.measure_clutter()
+      Z = np.concatenate([Z, Z_clutter], axis=0)
+
+    return Z
+
+  def measure_clutter(self) -> np.ndarray:
+    n = self.np_random.poisson(
+        lam=self.scenario['clutter_rate'] * self.scenario['dt']
     )
+    if n == 0:
+      return np.zeros((0, 2))
 
-    # Only keep detected measurements
-    pd = self.pd(
-        states, sensor=self.sensor, pos_inds=self.pos_inds, rng=self.np_random
+    clutter_range = self.np_random.uniform(
+        low=0, high=self.sensor['max_range'], size=n
     )
-    detected = self.np_random.uniform(size=len(self.ground_truth)) < pd
-    Z = Z[detected]
-
+    clutter_angle = self.np_random.uniform(
+        low=self.sensor['steering_angle'] - self.sensor['beamwidth']/2,
+        high=self.sensor['steering_angle'] + self.sensor['beamwidth']/2,
+        size=n
+    )
+    Z = self.sensor['position'] + np.array([
+        clutter_range * np.cos(clutter_angle),
+        clutter_range * np.sin(clutter_angle),
+    ]).T
     return Z
 
   def track_quality(self, tracks: MultiBernoulli) -> np.ndarray:

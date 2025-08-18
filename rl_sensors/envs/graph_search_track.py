@@ -33,16 +33,15 @@ class GraphSearchTrackEnv(gym.Env):
     # Search grid config
     self.nx_grid = 7
     self.ny_grid = 7
-    self.n_grid = self.nx_grid * self.ny_grid
-    self.max_search_nodes = self.n_grid
+    self.max_search_nodes = self.nx_grid * self.ny_grid
 
     # Agent config
-    self.max_agent_nodes = 25
+    self.max_agent_nodes = 20
     self.top_k_search_update = 4
 
     # Track config
     self.max_track_history = 5
-    self.max_active_tracks = 10
+    self.max_active_tracks = 5
     self.max_track_nodes = self.max_active_tracks * self.max_track_history
 
     self.max_nodes = self.max_search_nodes + \
@@ -105,7 +104,7 @@ class GraphSearchTrackEnv(gym.Env):
             [-1000, 1000]
         ]),
         max_velocity=10,
-        birth_rate=1/25,
+        birth_rate=1/50,
         clutter_rate=0.0,
         dt=1.0,
         max_trace=50**2,
@@ -119,8 +118,6 @@ class GraphSearchTrackEnv(gym.Env):
         action=np.zeros(1),
         max_range=1500,
     )
-
-    self.ground_truth = []
 
     ###########################
     # Initialize tracker
@@ -157,20 +154,28 @@ class GraphSearchTrackEnv(gym.Env):
     x = np.linspace(xmin+dx, xmax-dx, self.nx_grid)
     y = np.linspace(ymin+dy, ymax-dy, self.ny_grid)
 
-    dvx = dvy = self.scenario['max_velocity']
     grid_x, grid_y = np.meshgrid(x, y, indexing='ij')
     grid_x, grid_y = grid_x.ravel(), grid_y.ravel()
+    origin = np.logical_and(
+        grid_x == self.sensor['position'][0],
+        grid_y == self.sensor['position'][1]
+    )
+    grid_x = grid_x[~origin]
+    grid_y = grid_y[~origin]
+    n_grid = len(grid_x)
+
+    dvx = dvy = self.scenario['max_velocity']
     grid_vx = grid_vy = np.zeros_like(grid_x)
     birth_means = np.stack([
         grid_x, grid_vx, grid_y, grid_vy
     ], axis=-1)
     birth_covars = np.diag(np.array([dx, dvx, dy, dvy])**2)[None, ...].repeat(
-        self.n_grid, axis=0
+        n_grid, axis=0
     )
     birth_distribution = Gaussian(
         mean=birth_means,
         covar=birth_covars,
-        weight=np.full(self.n_grid, self.scenario['birth_rate'] / self.n_grid)
+        weight=np.full(n_grid, self.scenario['birth_rate'] / n_grid)
     )
 
     # Initial undetected distribution
@@ -178,7 +183,7 @@ class GraphSearchTrackEnv(gym.Env):
     undetected_state = Gaussian(
         mean=birth_means,
         covar=birth_covars,
-        weight=np.full(self.n_grid, init_num_objects / self.n_grid)
+        weight=np.full(n_grid, init_num_objects / n_grid)
     )
     init_ground_truth_inds = self.np_random.choice(
         a=np.arange(birth_distribution.shape[0]),
@@ -569,7 +574,9 @@ class GraphSearchTrackEnv(gym.Env):
         if len(track_history) > 0:
           track_pos = track_node_attributes['position'][i]
           track_vel = track_node_attributes['velocity'][i]
-          last_update = track_history(measurement_type_in=['update', 'miss'])[-1]
+          last_update = track_history(
+              measurement_type_in=['update', 'miss']
+          )[-1]
           track_edges.extend([
               (last_update['name'], track_node_name),
               (track_node_name, last_update['name'])
@@ -965,7 +972,7 @@ class GraphSearchTrackEnv(gym.Env):
 
     # Search nodes
     search_nodes = graph.vs(type_eq='search')
-    nx, ny = 20, 20
+    nx, ny = 50, 50
     search_grid = np.meshgrid(
         np.linspace(*self.scenario['extents'][0], nx),
         np.linspace(*self.scenario['extents'][1], ny)

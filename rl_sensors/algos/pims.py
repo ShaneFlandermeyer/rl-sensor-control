@@ -1,15 +1,10 @@
 import copy
 from typing import *
 import numpy as np
-from motpy.rfs.bernoulli import MultiBernoulli
-from motpy.models.transition.constant_velocity import ConstantVelocity
-from motpy.distributions.gaussian import Gaussian
 from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 import gymnasium as gym
 import functools
 from motpy.rfs.tomb import TOMBP
-
-from rl_sensors.envs.util import merge_poisson
 
 
 def simulate_ideal(
@@ -84,23 +79,16 @@ def simulate_ideal(
 
 def plan_pims(
     env: gym.Env,
-    N: int,
+    N_bins: int,
     H: int,
     r_th: float,
     rng: np.random.RandomState,
 ) -> np.ndarray:
-  # Create action array
-  A = np.prod(env.action_space.shape)
-  if isinstance(N, int):
-    N = np.full(A, N)
+  # Enumerate over all possible action sequences
+  action_dim = len(N_bins)
   actions = np.array(
-      np.meshgrid(
-          *[
-              [np.linspace(-1, 1, N[i]) for i in range(A)]
-              for t in range(H)
-          ]
-      )
-  ).reshape(-1, H, A)
+      np.meshgrid(*[np.linspace(-1, 1, nb) for nb in N_bins] * H)
+  ).T.reshape(-1, H, action_dim)
 
   state = copy.deepcopy(env.tracker)
   if len(state.mb) > 0:
@@ -108,9 +96,9 @@ def plan_pims(
 
   # Plan
   scores = np.zeros(actions.shape[0])
-  for i, action in enumerate(actions):
+  for i, action_seq in enumerate(actions):
     scores[i] = simulate_ideal(
-        env=env, tracker=state, action_seq=action, rng=rng
+        env=env, tracker=state, action_seq=action_seq, rng=rng
     )
   best_score, best_action = np.max(scores), actions[np.argmax(scores), 0, :]
   return best_score, best_action
@@ -132,9 +120,11 @@ if __name__ == '__main__':
   for iep in range(num_ep):
     total_r = 0
     env.reset()
-    
+
     for i in range(num_steps):
-      score, action = plan_pims(env=env, N=20, H=1, r_th=1e-2, rng=rng)
+      score, action = plan_pims(
+          env=env, N_bins=[20, 2], H=1, r_th=1e-2, rng=rng
+      )
       obs, reward, term, trunc, info = env.step(action)
       total_r += reward
       

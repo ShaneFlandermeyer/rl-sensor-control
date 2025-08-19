@@ -12,7 +12,12 @@ from motpy.rfs.tomb import TOMBP
 from rl_sensors.envs.util import merge_poisson
 
 
-def simulate_ideal(env: gym.Env, tracker: TOMBP, action_seq: np.ndarray):
+def simulate_ideal(
+    env: gym.Env,
+    tracker: TOMBP,
+    action_seq: np.ndarray,
+    rng: np.random.RandomState
+):
   # ASSUMPTIONS:
   # pd(x) = pd(E[x])
   # ps(x) = ps(E[x])
@@ -86,11 +91,13 @@ def plan_pims(
 ) -> np.ndarray:
   # Create action array
   A = np.prod(env.action_space.shape)
+  if isinstance(N, int):
+    N = np.full(A, N)
   actions = np.array(
       np.meshgrid(
           *[
-              [np.linspace(-1, 1, N) for _ in range(A)]
-              for _ in range(H)
+              [np.linspace(-1, 1, N[i]) for i in range(A)]
+              for t in range(H)
           ]
       )
   ).reshape(-1, H, A)
@@ -112,27 +119,26 @@ def plan_pims(
 if __name__ == '__main__':
   import time
 
-  seed = 42
-  np.random.seed(seed)
+  seed = 0
+  rng = np.random.RandomState(seed)
 
   # Configure environment
   env = GraphSearchTrackEnv()
   env.reset(seed=seed)
- 
+
   num_ep = 10
   num_steps = 1000
   mean_r = 0
   for iep in range(num_ep):
     total_r = 0
     env.reset()
+    
     for i in range(num_steps):
-      env.render()
-      score, action = plan_pims(env=env, N=20, H=1, r_th=1e-2)
-      # action = np.array([1/4])
+      score, action = plan_pims(env=env, N=20, H=1, r_th=1e-2, rng=rng)
       obs, reward, term, trunc, info = env.step(action)
-      print(env.tracker.poisson.state.weight.sum())
       total_r += reward
+      
     print(iep, total_r)
     mean_r += total_r / num_ep
-    
+
   print(mean_r)

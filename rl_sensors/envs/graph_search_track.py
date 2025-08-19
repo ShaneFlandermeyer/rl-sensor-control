@@ -32,17 +32,17 @@ class GraphSearchTrackEnv(gym.Env):
     self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,))
 
     # Search grid config
-    self.nx_grid = 7
-    self.ny_grid = 7
+    self.nx_grid = 8
+    self.ny_grid = 8
     self.max_search_nodes = self.nx_grid * self.ny_grid
 
     # Agent config
     self.max_agent_nodes = 20
-    self.top_k_search_update = 4
+    self.top_k_search_update = 5
 
     # Track config
     self.max_track_history = 5
-    self.max_active_tracks = 5
+    self.max_active_tracks = 10
     self.max_track_nodes = self.max_active_tracks * self.max_track_history
 
     self.max_nodes = self.max_search_nodes + \
@@ -157,14 +157,7 @@ class GraphSearchTrackEnv(gym.Env):
 
     grid_x, grid_y = np.meshgrid(x, y, indexing='ij')
     grid_x, grid_y = grid_x.ravel(), grid_y.ravel()
-    origin = np.logical_and(
-        grid_x == self.sensor['position'][0],
-        grid_y == self.sensor['position'][1]
-    )
-    grid_x = grid_x[~origin]
-    grid_y = grid_y[~origin]
     n_grid = len(grid_x)
-
     dvx = dvy = self.scenario['max_velocity']
     grid_vx = grid_vy = np.zeros_like(grid_x)
     birth_means = np.stack([
@@ -191,8 +184,11 @@ class GraphSearchTrackEnv(gym.Env):
         size=init_num_objects,
         p=birth_distribution.weight / np.sum(birth_distribution.weight)
     )
-    init_ground_truth = birth_distribution[init_ground_truth_inds].sample(
-        num_points=1, rng=self.np_random
+    init_ground_truth = uniform_sample_ellipse(
+        n=1,
+        mean=birth_distribution.mean[init_ground_truth_inds],
+        covar=birth_distribution.covar[init_ground_truth_inds],
+        rng=self.np_random,
     )
     init_ground_truth[..., self.pos_inds] = np.clip(
         init_ground_truth[..., self.pos_inds],
@@ -277,7 +273,7 @@ class GraphSearchTrackEnv(gym.Env):
                           np.arange(len(mb)), self.pos_inds, self.pos_inds
                       )
                   ]
-              ) < 5*self.scenario['max_trace']
+              ) < 3*self.scenario['max_trace']
           ),
           meta=self.tracker.mb_metadata,
       )
@@ -515,30 +511,32 @@ class GraphSearchTrackEnv(gym.Env):
       stale_track_nodes = self.graph.vs(type_eq='track', id_notin=track_ids)
       if len(stale_track_nodes) > 0:
         self.graph.delete_vertices(stale_track_nodes)
+        
+      # Select active tracks
+      active_mb = self.tracker.mb[:self.max_active_tracks]
+      active_mb_metadata = self.tracker.mb_metadata[:self.max_active_tracks]
 
-      # Collect track info for this timestep
-      num_tracks = min(len(self.tracker.mb), self.max_active_tracks)
+      # Collect track info for this timestep      
       track_node_attributes = dict(
           type='track',
           label=[node_label_map['track']],
           name=[],
           id=[],
           timestep=self.timestep,
-          position=self.tracker.mb.state.mean[:num_tracks, self.pos_inds],
-          velocity=self.tracker.mb.state.mean[:num_tracks, self.vel_inds],
+          position=active_mb.state.mean[:, self.pos_inds],
+          velocity=active_mb.state.mean[:, self.vel_inds],
           covar_diag=np.sqrt(np.diagonal(
-              self.tracker.mb.state.covar[:num_tracks],
-              axis1=-1, axis2=-2
+              active_mb.state.covar, axis1=-1, axis2=-2
           )),
           # Search features
-          weight=np.zeros(num_tracks),
+          weight=np.zeros(len(active_mb)),
           # Agent features
-          sensor_action=np.zeros((num_tracks, 1)),
+          sensor_action=np.zeros((len(active_mb), 1)),
           # Track features
           measurement_type=[],
           measurement_label=[],
           track_quality=[],
-          existence_probability=self.tracker.mb.r[:num_tracks],
+          existence_probability=active_mb.r,
           confirmed=[],
       )
       track_edge_attributes = dict(
@@ -552,12 +550,8 @@ class GraphSearchTrackEnv(gym.Env):
       )
       track_edges = []
       track_nodes = self.graph.vs(type_eq='track')
-      track_qualities = self.track_quality(self.tracker.mb)
-      for i, meta in enumerate(self.tracker.mb_metadata):
-        if i >= self.max_active_tracks:  # At track capacity
-          track_history['delete'] = True
-          continue
-
+      track_qualities = self.track_quality(active_mb)
+      for i, meta in enumerate(active_mb_metadata):
         # Update node attributes
         track_id = meta['id']
         track_node_name = f"{track_id}_t{self.timestep}"
@@ -609,8 +603,8 @@ class GraphSearchTrackEnv(gym.Env):
             )
 
         # Measurement update/miss edge
-        track_pd = self.tracker.mb_metadata[i]['pd']
-        track_pos = self.tracker.mb.state.mean[i, self.pos_inds]
+        track_pd = active_mb_metadata[i]['pd']
+        track_pos = active_mb.state.mean[i, self.pos_inds]
         track_update_dist = np.linalg.norm(track_pos - self.sensor['position'])
         track_update_angles = [
             np.arctan2(
@@ -648,7 +642,7 @@ class GraphSearchTrackEnv(gym.Env):
 
       # Add track nodes and edges
       self.graph.add_vertices(
-          n=num_tracks, attributes=track_node_attributes
+          n=len(active_mb), attributes=track_node_attributes
       )
       self.graph.add_edges(es=track_edges, attributes=track_edge_attributes)
     else:
@@ -837,9 +831,12 @@ class GraphSearchTrackEnv(gym.Env):
           size=num_birth,
           p=birth_distribution.weight / np.sum(birth_distribution.weight)
       )
-      new_states = birth_distribution[inds].sample(
-          num_points=1, rng=self.np_random,
-      )
+      new_states = uniform_sample_ellipse(
+        n=1,
+        mean=birth_distribution.mean[inds],
+        covar=birth_distribution.covar[inds],
+        rng=self.np_random,
+    )
       # Clip to scenario extents
       new_states[..., self.pos_inds] = np.clip(
           new_states[..., self.pos_inds],
@@ -870,31 +867,24 @@ class GraphSearchTrackEnv(gym.Env):
         )
 
     # Clutter measurements
-    if self.scenario['clutter_rate'] > 0:
-      Z_clutter = self.measure_clutter()
-      Z = np.concatenate([Z, Z_clutter], axis=0)
-
-    return Z
-
-  def measure_clutter(self) -> np.ndarray:
-    n = self.np_random.poisson(
+    n_clutter = self.np_random.poisson(
         lam=self.scenario['clutter_rate'] * self.scenario['dt']
     )
-    if n == 0:
-      return np.zeros((0, 2))
+    if n_clutter > 0:
+      clutter_range = self.np_random.uniform(
+          low=0, high=self.sensor['max_range'], size=n_clutter
+      )
+      clutter_angle = self.np_random.uniform(
+          low=self.sensor['steering_angle'] - self.sensor['beamwidth']/2,
+          high=self.sensor['steering_angle'] + self.sensor['beamwidth']/2,
+          size=n_clutter
+      )
+      Z_clutter = self.sensor['position'] + np.array([
+          clutter_range * np.cos(clutter_angle),
+          clutter_range * np.sin(clutter_angle),
+      ]).T
+      Z = np.concatenate([Z, Z_clutter], axis=0)
 
-    clutter_range = self.np_random.uniform(
-        low=0, high=self.sensor['max_range'], size=n
-    )
-    clutter_angle = self.np_random.uniform(
-        low=self.sensor['steering_angle'] - self.sensor['beamwidth']/2,
-        high=self.sensor['steering_angle'] + self.sensor['beamwidth']/2,
-        size=n
-    )
-    Z = self.sensor['position'] + np.array([
-        clutter_range * np.cos(clutter_angle),
-        clutter_range * np.sin(clutter_angle),
-    ]).T
     return Z
 
   def track_quality(self, tracks: MultiBernoulli) -> np.ndarray:

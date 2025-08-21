@@ -5,6 +5,7 @@ from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
 import gymnasium as gym
 import functools
 from motpy.rfs.tomb import TOMBP
+import tqdm
 
 
 def simulate_ideal(
@@ -19,7 +20,7 @@ def simulate_ideal(
   # Objects in FOV generate a noise-free measurement
   # No false alarms
 
-  score = 0
+  cost = 0
   for action in action_seq:
     # Update sensor
     env.update_sensor_state(action)
@@ -68,13 +69,18 @@ def simulate_ideal(
         )
 
     # Planning score
-    search_score = -tracker.poisson.state.weight.sum()
+    search_cost = tracker.poisson.state.weight.sum()
     if len(tracker.mb) == 0:
-      track_score = 0
+      track_cost = 0
     else:
-      track_score = env.track_quality(tracker.mb).sum()
-    score += (search_score + track_score)
-  return score
+      covars = tracker.mb.state.covar[
+          np.ix_(np.arange(len(tracker.mb)), [0, 2], [0, 2])
+      ]
+      track_cost = np.linalg.trace(covars).sum()
+    c = np.sqrt(env.scenario['max_trace'])
+    eta = c**2 / 2
+    cost += track_cost + eta * search_cost
+  return cost
 
 
 def plan_pims(
@@ -95,13 +101,13 @@ def plan_pims(
     state.mb, _ = state.mb.prune(valid_fn=lambda mb: mb.r > r_th)
 
   # Plan
-  scores = np.zeros(actions.shape[0])
+  costs = np.zeros(actions.shape[0])
   for i, action_seq in enumerate(actions):
-    scores[i] = simulate_ideal(
+    costs[i] = simulate_ideal(
         env=env, tracker=state, action_seq=action_seq, rng=rng
     )
-  best_score, best_action = np.max(scores), actions[np.argmax(scores), 0, :]
-  return best_score, best_action
+  best_cost, best_action = np.min(costs), actions[np.argmin(costs), 0, :]
+  return best_cost, best_action
 
 
 if __name__ == '__main__':
@@ -117,18 +123,22 @@ if __name__ == '__main__':
   num_ep = 10
   num_steps = 1000
   mean_r = 0
+  
   for iep in range(num_ep):
     total_r = 0
     env.reset()
-
+    pbar = tqdm.tqdm(initial=0, total=num_steps)
     for i in range(num_steps):
-      score, action = plan_pims(
-          env=env, N_bins=[20, 2], H=1, r_th=1e-2, rng=rng
+      cost, action = plan_pims(
+          env=env, N_bins=[20, 5], H=1, r_th=0.05, rng=rng
       )
       obs, reward, term, trunc, info = env.step(action)
       total_r += reward
-      
-    print(iep, total_r)
-    mean_r += total_r / num_ep
 
-  print(mean_r)
+      pbar.update()
+    pbar.close()
+
+    print(iep, total_r)
+    # Update moving average
+    mean_r = 1 / (iep + 1) * total_r + iep / (iep + 1) * mean_r
+    print(mean_r)

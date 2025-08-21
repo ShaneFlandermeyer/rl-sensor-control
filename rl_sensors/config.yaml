@@ -12,7 +12,7 @@ log_interval_steps: 10_000
 
 env:
   backend: gymnasium
-  env_id: GraphSearchTrack-v0
+  env_id: BeamOptimization-v0
   num_envs: 4
   utd_ratio: 1.0
   asynchronous: True

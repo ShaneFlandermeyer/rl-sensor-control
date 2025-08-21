@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 
-from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
+from rl_sensors.envs.beam_optimization import BeamOptimizationEnv
 from rl_sensors.layers.attention import PGAT
 from rl_sensors.layers.sage import GraphSAGE
 
@@ -110,7 +110,7 @@ class GraphEncoder(nn.Module):
 
 if __name__ == '__main__':
   env = gym.vector.SyncVectorEnv(
-      [lambda: GraphSearchTrackEnv() for _ in range(1)])
+      [lambda: BeamOptimizationEnv() for _ in range(1)])
   obs, _ = env.reset(seed=0)
   for i in range(30):
     obs = env.step(env.action_space.sample())[0]

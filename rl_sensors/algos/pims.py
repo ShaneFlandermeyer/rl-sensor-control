@@ -1,7 +1,7 @@
 import copy
 from typing import *
 import numpy as np
-from rl_sensors.envs.graph_search_track import GraphSearchTrackEnv
+from rl_sensors.envs.beam_optimization import BeamOptimizationEnv
 import gymnasium as gym
 import functools
 from motpy.rfs.tomb import TOMBP
@@ -117,7 +117,7 @@ if __name__ == '__main__':
   rng = np.random.RandomState(seed)
 
   # Configure environment
-  env = GraphSearchTrackEnv()
+  env = BeamOptimizationEnv()
   env.reset(seed=seed)
 
   num_ep = 10

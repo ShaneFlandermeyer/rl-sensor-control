@@ -27,7 +27,7 @@ def symlog(x):
   return np.sign(x) * np.log1p(np.abs(x))
 
 
-class GraphSearchTrackEnv(gym.Env):
+class BeamOptimizationEnv(gym.Env):
   def __init__(self):
     self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,))
     self.action_dim = np.prod(self.action_space.shape)

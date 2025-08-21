@@ -29,7 +29,8 @@ def symlog(x):
 
 class GraphSearchTrackEnv(gym.Env):
   def __init__(self):
-    self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,))
+    self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,))
+    self.action_dim = np.prod(self.action_space.shape)
 
     # Search grid config
     self.nx_grid = 8
@@ -79,7 +80,7 @@ class GraphSearchTrackEnv(gym.Env):
         node_features=gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.max_nodes, 20),
+            shape=(self.max_nodes, 21),
             dtype=np.float32,
         ),
         node_mask=gym.spaces.MultiBinary(self.max_nodes),
@@ -114,10 +115,12 @@ class GraphSearchTrackEnv(gym.Env):
     self.sensor = dict(
         position=np.zeros(2),
         velocity=np.zeros(2),
-        beamwidth=20*np.pi/180,
-        steering_angle=0,
-        action=np.zeros(1),
         max_range=1500,
+        min_beamwidth=20*np.pi/180,
+        max_beamwidth=40*np.pi/180,
+        steering_angle=0,
+        beamwidth=0,
+        action=np.zeros(self.action_dim),
     )
 
     ###########################
@@ -189,11 +192,6 @@ class GraphSearchTrackEnv(gym.Env):
         mean=birth_distribution.mean[init_ground_truth_inds],
         covar=birth_distribution.covar[init_ground_truth_inds],
         rng=self.np_random,
-    )
-    init_ground_truth[..., self.pos_inds] = np.clip(
-        init_ground_truth[..., self.pos_inds],
-        self.scenario['extents'][:, 0],
-        self.scenario['extents'][:, 1]
     )
     self.ground_truth = [list(state) for state in init_ground_truth]
 
@@ -357,7 +355,7 @@ class GraphSearchTrackEnv(gym.Env):
               weight=self.tracker.poisson.state.weight,
               # Agent features
               sensor_action=np.zeros(
-                  (len(self.tracker.poisson), self.action_space.shape[0])
+                  (len(self.tracker.poisson), self.action_dim)
               ),
               # Track features
               measurement_type='none',
@@ -511,12 +509,12 @@ class GraphSearchTrackEnv(gym.Env):
       stale_track_nodes = self.graph.vs(type_eq='track', id_notin=track_ids)
       if len(stale_track_nodes) > 0:
         self.graph.delete_vertices(stale_track_nodes)
-        
+
       # Select active tracks
       active_mb = self.tracker.mb[:self.max_active_tracks]
       active_mb_metadata = self.tracker.mb_metadata[:self.max_active_tracks]
 
-      # Collect track info for this timestep      
+      # Collect track info for this timestep
       track_node_attributes = dict(
           type='track',
           label=[node_label_map['track']],
@@ -531,7 +529,7 @@ class GraphSearchTrackEnv(gym.Env):
           # Search features
           weight=np.zeros(len(active_mb)),
           # Agent features
-          sensor_action=np.zeros((len(active_mb), 1)),
+          sensor_action=np.zeros((len(active_mb), self.action_dim)),
           # Track features
           measurement_type=[],
           measurement_label=[],
@@ -798,8 +796,17 @@ class GraphSearchTrackEnv(gym.Env):
     return search_reward + track_reward
 
   def update_sensor_state(self, action: np.ndarray) -> None:
-    self.sensor['steering_angle'] = action[0] * np.pi
     self.sensor['action'] = action
+    self.sensor['steering_angle'] = np.interp(
+        action[0],
+        xp=[-1, 1],
+        fp=[-np.pi, np.pi]
+    )
+    self.sensor['beamwidth'] = np.interp(
+        action[1],
+        xp=[-1, 1],
+        fp=[self.sensor['min_beamwidth'], self.sensor['max_beamwidth']]
+    )
 
   def update_ground_truth(self, dt: float) -> None:
     if len(self.ground_truth) > 0:
@@ -832,16 +839,10 @@ class GraphSearchTrackEnv(gym.Env):
           p=birth_distribution.weight / np.sum(birth_distribution.weight)
       )
       new_states = uniform_sample_ellipse(
-        n=1,
-        mean=birth_distribution.mean[inds],
-        covar=birth_distribution.covar[inds],
-        rng=self.np_random,
-    )
-      # Clip to scenario extents
-      new_states[..., self.pos_inds] = np.clip(
-          new_states[..., self.pos_inds],
-          self.scenario['extents'][:, 0],
-          self.scenario['extents'][:, 1]
+          n=1,
+          mean=birth_distribution.mean[inds],
+          covar=birth_distribution.covar[inds],
+          rng=self.np_random,
       )
       self.ground_truth.extend([list(state) for state in new_states])
 
@@ -926,9 +927,14 @@ class GraphSearchTrackEnv(gym.Env):
         x[..., 1] - sensor_pos[1],
         x[..., 0] - sensor_pos[0]
     )
-    angle_diff = np.mod((az - steering_angle) + np.pi, 2*np.pi) - np.pi
-    in_region = abs(angle_diff) <= beamwidth/2
-    pd = np.where(in_region, 0.9, 0)
+    beam_az = np.mod((az - steering_angle) + np.pi, 2*np.pi) - np.pi
+    detectable = abs(beam_az) <= beamwidth/2
+    beam_pd = np.interp(
+        sensor['beamwidth'],
+        xp=[sensor['min_beamwidth'], sensor['max_beamwidth']],
+        fp=[0.9, 0.6],
+    )
+    pd = np.where(detectable, beam_pd, 0.0)
     return np.average(pd, weights=weights, axis=-1)
 
   @staticmethod

@@ -22,8 +22,7 @@ from motpy.distributions.gaussian import uniform_sample_ellipse
 
 from rl_sensors.envs.util import merge_poisson, symlog
 
-
-class BeamOptimizationEnv(gym.Env):
+class MobileSurveillanceEnv(gym.Env):
   def __init__(self):
     self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,))
     self.action_dim = np.prod(self.action_space.shape)

@@ -120,7 +120,7 @@ if __name__ == '__main__':
   env = BeamOptimizationEnv()
   env.reset(seed=seed)
 
-  num_ep = 10
+  num_ep = 100
   num_steps = 1000
   mean_r = 0
   

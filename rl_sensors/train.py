@@ -215,7 +215,7 @@ def train(cfg: dict):
             obs=observation,
             mpc=True,
             prev_plan=plan,
-            deterministic=False,
+            deterministic=True,
             train=True,
             key=action_key
         )

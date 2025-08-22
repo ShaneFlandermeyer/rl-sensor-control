@@ -5,6 +5,10 @@ from motpy.distributions.gaussian import merge_gaussians
 from typing import *
 
 
+def symlog(x):
+  return np.sign(x) * np.log1p(np.abs(x))
+
+
 def static_merge_poisson(
     distribution: Poisson,
     metadata: List[Dict[str, Any]],

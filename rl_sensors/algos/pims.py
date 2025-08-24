@@ -2,6 +2,7 @@ import copy
 from typing import *
 import numpy as np
 from rl_sensors.envs.beam_optimization import BeamOptimizationEnv
+from rl_sensors.envs.mobile_surveillance import MobileSurveillanceEnv
 import gymnasium as gym
 import functools
 from motpy.rfs.tomb import TOMBP
@@ -10,6 +11,7 @@ import tqdm
 
 def simulate_ideal(
     env: gym.Env,
+    sensor: Dict[str, Any],
     tracker: TOMBP,
     action_seq: np.ndarray,
     rng: np.random.RandomState
@@ -19,11 +21,10 @@ def simulate_ideal(
   # ps(x) = ps(E[x])
   # Objects in FOV generate a noise-free measurement
   # No false alarms
-
   cost = 0
   for action in action_seq:
     # Update sensor
-    env.update_sensor_state(action)
+    sensor = env.update_sensor_state(sensor, action)
 
     # Predict step
     tracker = tracker.predict(
@@ -39,7 +40,7 @@ def simulate_ideal(
     # Update step
     poisson_pd = env.pd(
         object_state=tracker.poisson.state.mean,
-        sensor=env.sensor,
+        sensor=sensor,
         pos_inds=env.pos_inds,
         rng=rng,
     )
@@ -48,7 +49,7 @@ def simulate_ideal(
     if len(tracker.mb) > 0:
       pred_mb_pd = env.pd(
           object_state=tracker.mb.state.mean,
-          sensor=env.sensor,
+          sensor=sensor,
           pos_inds=env.pos_inds,
           rng=rng,
       )
@@ -56,16 +57,16 @@ def simulate_ideal(
       measurements = env.state_estimator.measurement_model(
           tracker.mb.state.mean[updated_mb_inds],
           noise=False,
-          sensor_pos=env.sensor['position'],
-          sensor_vel=env.sensor['velocity'],
+          sensor_pos=sensor['position'],
+          sensor_vel=sensor['velocity'],
           rng=rng,
       )
       for iz, imb in enumerate(updated_mb_inds):
         tracker.mb.state[imb] = env.state_estimator.update(
             state=tracker.mb[imb].state,
             measurement=measurements[iz],
-            sensor_pos=env.sensor['position'],
-            sensor_vel=env.sensor['velocity'],
+            sensor_pos=sensor['position'],
+            sensor_vel=sensor['velocity'],
         )
 
     # Planning score
@@ -96,15 +97,19 @@ def plan_pims(
       np.meshgrid(*[np.linspace(-1, 1, nb) for nb in N_bins] * H)
   ).T.reshape(-1, H, action_dim)
 
-  state = copy.deepcopy(env.tracker)
-  if len(state.mb) > 0:
-    state.mb, _ = state.mb.prune(valid_fn=lambda mb: mb.r > r_th)
+  tracker = copy.deepcopy(env.tracker)
+  if len(tracker.mb) > 0:
+    tracker.mb, _ = tracker.mb.prune(valid_fn=lambda mb: mb.r > r_th)
 
   # Plan
   costs = np.zeros(actions.shape[0])
   for i, action_seq in enumerate(actions):
     costs[i] = simulate_ideal(
-        env=env, tracker=state, action_seq=action_seq, rng=rng
+        env=env,
+        sensor=env.sensor,
+        tracker=tracker,
+        action_seq=action_seq,
+        rng=rng
     )
   best_cost, best_action = np.min(costs), actions[np.argmin(costs), 0, :]
   return best_cost, best_action
@@ -113,24 +118,42 @@ def plan_pims(
 if __name__ == '__main__':
   import time
 
-  seed = 0
+  seed = 1
   rng = np.random.RandomState(seed)
 
   # Configure environment
-  env = BeamOptimizationEnv()
+  # env = BeamOptimizationEnv()
+  env = MobileSurveillanceEnv()
   env.reset(seed=seed)
 
   num_ep = 100
   num_steps = 1000
   mean_r = 0
-  
+
   for iep in range(num_ep):
     total_r = 0
     env.reset()
     pbar = tqdm.tqdm(initial=0, total=num_steps)
     for i in range(num_steps):
+      env.render()
+      # if i > 0:
+      #   env.render()
+      # if i == 403:
+      #   import matplotlib.pyplot as plt
+      #   plt.rcParams.update(
+      #       {
+      #           'figure.figsize': (10, 8),
+      #           'font.size': 12,
+      #           'font.weight': 'bold',
+      #           'lines.linewidth': 2,
+
+      #       }
+      #   )
+      #   env.render()
+      #   plt.savefig(
+      #       '/home/shane/onedrive/research/my-publications/2025_taes_graph/figures/beam_optimization_scenario.pdf', bbox_inches='tight')
       cost, action = plan_pims(
-          env=env, N_bins=[20, 5], H=1, r_th=0.05, rng=rng
+          env=env, N_bins=[4, 2], H=3, r_th=0.01, rng=rng
       )
       obs, reward, term, trunc, info = env.step(action)
       total_r += reward

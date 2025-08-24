@@ -213,7 +213,7 @@ class BeamOptimizationEnv(gym.Env):
     self.timestep += 1
 
     # Update simulation
-    self.update_sensor_state(action)
+    self.sensor = self.update_sensor_state(state=self.sensor, action=action)
     self.update_ground_truth(dt=self.scenario['dt'])
     measurements = self.measure(
         states=np.array([path[-1] for path in self.ground_truth])
@@ -791,18 +791,22 @@ class BeamOptimizationEnv(gym.Env):
     track_reward = track_qualities.sum()
     return search_reward + track_reward
 
-  def update_sensor_state(self, action: np.ndarray) -> None:
-    self.sensor['action'] = action
-    self.sensor['steering_angle'] = np.interp(
-        action[0],
-        xp=[-1, 1],
-        fp=[-np.pi, np.pi]
+  def update_sensor_state(
+      self, state: Dict[str, Any], action: np.ndarray
+  ) -> None:
+    new_state = state.copy()
+    new_state.update(
+        action=action,
+        steering_angle=np.interp(
+            action[0], xp=[-1, 1], fp=[-np.pi, np.pi]
+        ),
+        beamwidth=np.interp(
+            action[1],
+            xp=[-1, 1],
+            fp=[self.sensor['min_beamwidth'], self.sensor['max_beamwidth']]
+        )
     )
-    self.sensor['beamwidth'] = np.interp(
-        action[1],
-        xp=[-1, 1],
-        fp=[self.sensor['min_beamwidth'], self.sensor['max_beamwidth']]
-    )
+    return new_state
 
   def update_ground_truth(self, dt: float) -> None:
     if len(self.ground_truth) > 0:

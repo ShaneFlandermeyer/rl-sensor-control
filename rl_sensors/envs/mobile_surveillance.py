@@ -1,3 +1,4 @@
+import copy
 import functools
 from typing import *
 
@@ -22,6 +23,7 @@ from motpy.distributions.gaussian import uniform_sample_ellipse
 
 from rl_sensors.envs.util import merge_poisson, symlog
 
+
 class MobileSurveillanceEnv(gym.Env):
   def __init__(self):
     self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,))
@@ -38,7 +40,7 @@ class MobileSurveillanceEnv(gym.Env):
 
     # Track config
     self.max_track_history = 5
-    self.max_active_tracks = 10
+    self.max_active_tracks = 5
     self.max_track_nodes = self.max_active_tracks * self.max_track_history
 
     self.max_nodes = self.max_search_nodes + \
@@ -97,24 +99,21 @@ class MobileSurveillanceEnv(gym.Env):
 
     self.scenario = dict(
         extents=np.array([
-            [-1000, 1000],
-            [-1000, 1000]
+            [-100, 100],
+            [-100, 100]
         ]),
-        max_velocity=10,
-        birth_rate=1/50,
+        max_velocity=1,
+        birth_rate=1/100,
         clutter_rate=0.0,
         dt=1.0,
-        max_trace=50**2,
+        max_trace=15**2,
         num_confirm_detections=3,
     )
     self.sensor = dict(
         position=np.zeros(2),
         velocity=np.zeros(2),
-        max_range=1500,
-        min_beamwidth=20*np.pi/180,
-        max_beamwidth=40*np.pi/180,
-        steering_angle=0,
-        beamwidth=0,
+        max_range=15,
+        max_speed=10,
         action=np.zeros(self.action_dim),
     )
 
@@ -125,23 +124,23 @@ class MobileSurveillanceEnv(gym.Env):
     self.vel_inds = [1, 3]
     self.transition_model = ConstantVelocity(
         state_dim=4,
-        w=1e-1,
+        w=0.01,
         position_inds=self.pos_inds,
         velocity_inds=self.vel_inds,
         noise_type='continuous',
     )
-    self.measurement_model = Radar2D(
-        covar=np.diag([5, 1*np.pi/180, 1])**2,
-        pos_inds=self.pos_inds,
-        vel_inds=self.vel_inds,
+    self.measurement_model = LinearMeasurementModel(
+        state_dim=4,
+        covar=(1**2)*np.eye(2),
+        measured_dims=self.pos_inds,
     )
     self.state_estimator = UnscentedKalmanFilter(
         transition_model=self.transition_model,
         measurement_model=self.measurement_model,
         state_subtract_fn=np.subtract,
         state_average_fn=np.average,
-        measurement_subtract_fn=Radar2D.subtract_fn,
-        measurement_average_fn=Radar2D.average_fn,
+        measurement_subtract_fn=np.subtract,
+        measurement_average_fn=np.average,
         sigma_params=dict(alpha=1e-3, beta=2, kappa=0),
     )
 
@@ -212,7 +211,7 @@ class MobileSurveillanceEnv(gym.Env):
     self.timestep += 1
 
     # Update simulation
-    self.update_sensor_state(action)
+    self.sensor = self.update_sensor_state(self.sensor, action)
     self.update_ground_truth(dt=self.scenario['dt'])
     measurements = self.measure(
         states=np.array([path[-1] for path in self.ground_truth])
@@ -239,8 +238,7 @@ class MobileSurveillanceEnv(gym.Env):
     )
 
     # Update step
-    volume = (self.sensor['beamwidth'] / (2*np.pi)) * \
-        (np.pi * self.sensor['max_range']**2)
+    volume = (np.pi * self.sensor['max_range']**2)
     self.tracker = self.tracker.update(
         measurements=measurements,
         state_estimator=self.state_estimator,
@@ -397,8 +395,7 @@ class MobileSurveillanceEnv(gym.Env):
         type=[],
         label=[],
         pd=[],
-        distance=[],
-        angle=[],
+        measurement=[],
         relative_position=[],
         relative_velocity=[],
     )
@@ -418,8 +415,8 @@ class MobileSurveillanceEnv(gym.Env):
               edge_label_map['transition']
           ],
           pd=agent_edge_attributes['pd'] + [0.0, 0.0],
-          distance=agent_edge_attributes['distance'] + [0.0, 0.0],
-          angle=agent_edge_attributes['angle'] + [0.0, 0.0],
+          measurement=agent_edge_attributes['measurement'] + 
+          2*[np.zeros(self.measurement_model.measurement_dim)],
           relative_position=agent_edge_attributes['relative_position'] + [
               last_agent['position'] - current_agent_node['position'],
               current_agent_node['position'] - last_agent['position'],
@@ -448,21 +445,15 @@ class MobileSurveillanceEnv(gym.Env):
             )[-num_search_updates:]
         ]
 
-      # NOTE: Assumes search nodes have the same ordering as the search grid
       search_edge_pd = search_pd[detected_search].tolist()
-      search_edge_dist = np.linalg.norm(
-          search_pos[detected_search] - self.sensor['position'], axis=-1
-      ).tolist()
-      search_edge_angles = (
-          np.arctan2(
-              search_pos[detected_search, 1] - self.sensor['position'][1],
-              search_pos[detected_search, 0] - self.sensor['position'][0]
-          ).tolist() +
-          np.arctan2(
-              self.sensor['position'][1] - search_pos[detected_search, 1],
-              self.sensor['position'][0] - search_pos[detected_search, 0]
-          ).tolist()
-      )
+      # TODO: Get this from the measurement model
+      search_edge_measurement = [
+          search_nodes[i]['position'] - self.sensor['position']
+          for i in detected_search
+      ] + [
+          self.sensor['position'] - search_nodes[i]['position']
+          for i in detected_search
+      ]
 
       agent_edges.extend([
           (search_nodes[i]['name'], current_agent_node['name'])
@@ -477,8 +468,9 @@ class MobileSurveillanceEnv(gym.Env):
               edge_label_map['update']
           ],
           pd=agent_edge_attributes['pd'] + 2*search_edge_pd,
-          distance=agent_edge_attributes['distance'] + 2*search_edge_dist,
-          angle=agent_edge_attributes['angle'] + search_edge_angles,
+          measurement=agent_edge_attributes['measurement'] +
+          search_edge_measurement,
+          # Replace distance and angle with a single measurement features
           relative_position=agent_edge_attributes['relative_position'] +
           num_search_edges*[np.zeros(2)],
           relative_velocity=agent_edge_attributes['relative_velocity'] +
@@ -536,8 +528,7 @@ class MobileSurveillanceEnv(gym.Env):
           type=[],
           label=[],
           pd=[],
-          distance=[],
-          angle=[],
+          measurement=[],
           relative_position=[],
           relative_velocity=[],
       )
@@ -583,8 +574,8 @@ class MobileSurveillanceEnv(gym.Env):
                     edge_label_map['transition']
                 ],
                 pd=track_edge_attributes['pd'] + [0.0, 0.0],
-                distance=track_edge_attributes['distance'] + [0.0, 0.0],
-                angle=track_edge_attributes['angle'] + [0.0, 0.0],
+                measurement=track_edge_attributes['measurement'] + 
+                2*[np.zeros(self.measurement_model.measurement_dim)],
                 relative_position=track_edge_attributes['relative_position'] + [
                     last_update['position'] - track_pos,
                     track_pos - last_update['position'],
@@ -598,17 +589,12 @@ class MobileSurveillanceEnv(gym.Env):
         # Measurement update/miss edge
         track_pd = active_mb_metadata[i]['pd']
         track_pos = active_mb.state.mean[i, self.pos_inds]
-        track_update_dist = np.linalg.norm(track_pos - self.sensor['position'])
-        track_update_angles = [
-            np.arctan2(
-                track_pos[1] - self.sensor['position'][1],
-                track_pos[0] - self.sensor['position'][0]
-            ),
-            np.arctan2(
-                self.sensor['position'][1] - track_pos[1],
-                self.sensor['position'][0] - track_pos[0]
-            ),
+        # TODO: Get this from the measurement model
+        track_update_measurement = [
+            track_pos - self.sensor['position'],
+            self.sensor['position'] - track_pos,
         ]
+
         track_edges.extend([
             (track_node_name, current_agent_node['name']),
             (current_agent_node['name'], track_node_name),
@@ -619,8 +605,8 @@ class MobileSurveillanceEnv(gym.Env):
                 edge_label_map['update']
             ],
             pd=track_edge_attributes['pd'] + 2*[track_pd],
-            distance=track_edge_attributes['distance'] + 2*[track_update_dist],
-            angle=track_edge_attributes['angle'] + track_update_angles,
+            measurement=track_edge_attributes['measurement'] +
+            track_update_measurement,
             relative_position=track_edge_attributes['relative_position'] +
             2*[np.zeros(2)],
             relative_velocity=track_edge_attributes['relative_velocity'] +
@@ -697,8 +683,7 @@ class MobileSurveillanceEnv(gym.Env):
           'label',
           # Measurement features
           'pd',
-          'distance',
-          'angle',
+          'measurement',
           # Transition features
           'relative_position',
           'relative_velocity',
@@ -790,18 +775,24 @@ class MobileSurveillanceEnv(gym.Env):
     track_reward = track_qualities.sum()
     return search_reward + track_reward
 
-  def update_sensor_state(self, action: np.ndarray) -> None:
-    self.sensor['action'] = action
-    self.sensor['steering_angle'] = np.interp(
-        action[0],
-        xp=[-1, 1],
-        fp=[-np.pi, np.pi]
+  def update_sensor_state(
+      self, state: Dict[str, Any], action: np.ndarray
+  ) -> Dict[str, Any]:
+    heading = np.interp(action[0], [-1, 1], [-np.pi, np.pi])
+    speed = np.interp(action[1], [-1, 1], [0, state['max_speed']])
+    new_velocity = speed * np.array([np.cos(heading), np.sin(heading)])
+    new_position = np.clip(
+        state['position'] + new_velocity * self.scenario['dt'],
+        *self.scenario['extents'].T
     )
-    self.sensor['beamwidth'] = np.interp(
-        action[1],
-        xp=[-1, 1],
-        fp=[self.sensor['min_beamwidth'], self.sensor['max_beamwidth']]
+    new_state = copy.copy(state)
+    new_state.update(
+        action=action,
+        position=new_position,
+        velocity=new_velocity,
     )
+
+    return new_state
 
   def update_ground_truth(self, dt: float) -> None:
     if len(self.ground_truth) > 0:
@@ -915,21 +906,10 @@ class MobileSurveillanceEnv(gym.Env):
       weights = np.ones(1)
 
     # Detect objects within beam
-    sensor_pos = sensor['position']
-    beamwidth = sensor['beamwidth']
-    steering_angle = sensor['steering_angle']
-    az = np.arctan2(
-        x[..., 1] - sensor_pos[1],
-        x[..., 0] - sensor_pos[0]
-    )
-    beam_az = np.mod((az - steering_angle) + np.pi, 2*np.pi) - np.pi
-    detectable = abs(beam_az) <= beamwidth/2
-    beam_pd = np.interp(
-        sensor['beamwidth'],
-        xp=[sensor['min_beamwidth'], sensor['max_beamwidth']],
-        fp=[0.9, 0.6],
-    )
-    pd = np.where(detectable, beam_pd, 0.0)
+    detectable = np.linalg.norm(
+        x - sensor['position'], axis=-1
+    ) <= sensor['max_range']
+    pd = np.where(detectable, 0.9, 0.0)
     return np.average(pd, weights=weights, axis=-1)
 
   @staticmethod
@@ -980,16 +960,12 @@ class MobileSurveillanceEnv(gym.Env):
     ##################################
     # Plot sensor
     plt.plot(*self.sensor['position'], 'k.')
-    # Plot a transparent blue semicircle with angle beamwidth centered at the steering angle. Only plot that wedge/arc, not the full circle
-    beamwidth = self.sensor['beamwidth']
-    steering_angle = self.sensor['steering_angle']
-    plt.gca().add_patch(matplotlib.patches.Wedge(
-        center=self.sensor['position'],
-        r=np.max(np.linalg.norm(self.scenario['extents'], axis=-1)),
-        theta1=np.degrees(steering_angle - beamwidth/2),
-        theta2=np.degrees(steering_angle + beamwidth/2),
+    plt.gca().add_patch(matplotlib.patches.Circle(
+        xy=self.sensor['position'],
+        radius=self.sensor['max_range'],
         color='r',
         alpha=0.5,
+        linestyle='--',
     ))
 
     ##################################

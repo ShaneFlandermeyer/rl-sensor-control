@@ -10,6 +10,7 @@ from einops import rearrange
 from rl_sensors.envs.beam_optimization import BeamOptimizationEnv
 from rl_sensors.layers.attention import PGAT
 from rl_sensors.layers.sage import GraphSAGE
+import numpy as np
 
 
 def mish(x: jax.Array) -> jax.Array:
@@ -28,7 +29,9 @@ class GraphEncoder(nn.Module):
     ######################
     # Pre-processing
     ######################
-    current_agent_node_ind = input['current_agent_node_ind'][..., None]
+    current_agent_node_ind = jnp.asarray(
+        input['current_agent_node_ind']
+    )[..., None]
     edge_features = input['edge_features']
     edge_list = input['edge_list']
     edge_mask = input['edge_mask']

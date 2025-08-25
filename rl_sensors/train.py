@@ -6,7 +6,6 @@ import flax.linen as nn
 import gymnasium as gym
 import hydra
 import jax
-import jax.numpy as jnp
 import numpy as np
 import optax
 import orbax.checkpoint as ocp
@@ -17,7 +16,6 @@ from flax.metrics import tensorboard
 from flax.training.train_state import TrainState
 
 from tdmpc2_jax import TDMPC2, WorldModel
-from tdmpc2_jax.common.activations import mish, simnorm
 from tdmpc2_jax.data import SequentialReplayBuffer
 from tdmpc2_jax.envs.dmcontrol import make_dmc_env
 from tdmpc2_jax.networks import NormedLinear
@@ -209,7 +207,7 @@ def train(cfg: dict):
             obs=observation,
             mpc=True,
             prev_plan=plan,
-            deterministic=True,
+            deterministic=False,
             train=True,
             key=action_key
         )

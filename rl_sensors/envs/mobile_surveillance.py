@@ -36,7 +36,7 @@ class MobileSurveillanceEnv(gym.Env):
 
     # Agent config
     self.max_agent_nodes = 20
-    self.top_k_search_update = 5
+    self.top_k_search_update = 4
 
     # Track config
     self.max_track_history = 5
@@ -124,14 +124,14 @@ class MobileSurveillanceEnv(gym.Env):
     self.vel_inds = [1, 3]
     self.transition_model = ConstantVelocity(
         state_dim=4,
-        w=0.01,
+        w=1e-4,
         position_inds=self.pos_inds,
         velocity_inds=self.vel_inds,
         noise_type='continuous',
     )
     self.measurement_model = LinearMeasurementModel(
         state_dim=4,
-        covar=(1**2)*np.eye(2),
+        covar=(0.1**2)*np.eye(2),
         measured_dims=self.pos_inds,
     )
     self.state_estimator = UnscentedKalmanFilter(
@@ -415,7 +415,7 @@ class MobileSurveillanceEnv(gym.Env):
               edge_label_map['transition']
           ],
           pd=agent_edge_attributes['pd'] + [0.0, 0.0],
-          measurement=agent_edge_attributes['measurement'] + 
+          measurement=agent_edge_attributes['measurement'] +
           2*[np.zeros(self.measurement_model.measurement_dim)],
           relative_position=agent_edge_attributes['relative_position'] + [
               last_agent['position'] - current_agent_node['position'],
@@ -436,46 +436,57 @@ class MobileSurveillanceEnv(gym.Env):
           for i in range(len(search_nodes))
       ])
       detected_search = np.where(search_pd > 0)[0]
-      num_search_updates = min(len(detected_search), self.top_k_search_update)
-      num_search_edges = 2 * num_search_updates
-      if num_search_updates > 0:
+      if len(detected_search) > self.top_k_search_update:
         detected_search = detected_search[
             np.argpartition(
-                search_pd[detected_search], -num_search_updates
-            )[-num_search_updates:]
+                search_pd[detected_search], -self.top_k_search_update
+            )[-self.top_k_search_update:]
         ]
-
+      num_search_updates = len(detected_search)
       search_edge_pd = search_pd[detected_search].tolist()
-      # TODO: Get this from the measurement model
-      search_edge_measurement = [
-          search_nodes[i]['position'] - self.sensor['position']
-          for i in detected_search
-      ] + [
-          self.sensor['position'] - search_nodes[i]['position']
-          for i in detected_search
-      ]
 
+      # Search -> Agent edges
       agent_edges.extend([
           (search_nodes[i]['name'], current_agent_node['name'])
           for i in detected_search
-      ] + [
+      ])
+      search_to_agent_measurement = \
+          search_pos[detected_search] - self.sensor['position']
+      agent_edge_attributes.update(
+          type=agent_edge_attributes['type'] +
+          num_search_updates*['update'],
+          label=agent_edge_attributes['label'] +
+          num_search_updates*[edge_label_map['update']],
+          pd=agent_edge_attributes['pd'] + search_edge_pd,
+          measurement=agent_edge_attributes['measurement'] +
+          search_to_agent_measurement.tolist(),
+          relative_position=agent_edge_attributes['relative_position'] +
+          np.zeros((num_search_updates, 2)).tolist(),
+          relative_velocity=agent_edge_attributes['relative_velocity'] +
+          np.zeros((num_search_updates, 2)).tolist(),
+      )
+
+      # Agent -> Search edges
+      agent_to_search_measurement = \
+          self.sensor['position'] - search_pos[detected_search]
+      agent_edge_attributes.update(
+          type=agent_edge_attributes['type'] +
+          num_search_updates*['update'],
+          label=agent_edge_attributes['label'] +
+          num_search_updates*[edge_label_map['update']],
+          pd=agent_edge_attributes['pd'] + search_edge_pd,
+          measurement=agent_edge_attributes['measurement'] +
+          agent_to_search_measurement.tolist(),
+          # Replace distance and angle with a single measurement features
+          relative_position=agent_edge_attributes['relative_position'] +
+          np.zeros((num_search_updates, 2)).tolist(),
+          relative_velocity=agent_edge_attributes['relative_velocity'] +
+          np.zeros((num_search_updates, 2)).tolist(),
+      )
+      agent_edges.extend([
           (current_agent_node['name'], search_nodes[i]['name'])
           for i in detected_search
       ])
-      agent_edge_attributes.update(
-          type=agent_edge_attributes['type'] + num_search_edges*['update'],
-          label=agent_edge_attributes['label'] + num_search_edges*[
-              edge_label_map['update']
-          ],
-          pd=agent_edge_attributes['pd'] + 2*search_edge_pd,
-          measurement=agent_edge_attributes['measurement'] +
-          search_edge_measurement,
-          # Replace distance and angle with a single measurement features
-          relative_position=agent_edge_attributes['relative_position'] +
-          num_search_edges*[np.zeros(2)],
-          relative_velocity=agent_edge_attributes['relative_velocity'] +
-          num_search_edges*[np.zeros(2)],
-      )
 
     self.graph.add_vertex(**current_agent_node)
     self.graph.add_edges(es=agent_edges, attributes=agent_edge_attributes)
@@ -574,7 +585,7 @@ class MobileSurveillanceEnv(gym.Env):
                     edge_label_map['transition']
                 ],
                 pd=track_edge_attributes['pd'] + [0.0, 0.0],
-                measurement=track_edge_attributes['measurement'] + 
+                measurement=track_edge_attributes['measurement'] +
                 2*[np.zeros(self.measurement_model.measurement_dim)],
                 relative_position=track_edge_attributes['relative_position'] + [
                     last_update['position'] - track_pos,
@@ -589,11 +600,8 @@ class MobileSurveillanceEnv(gym.Env):
         # Measurement update/miss edge
         track_pd = active_mb_metadata[i]['pd']
         track_pos = active_mb.state.mean[i, self.pos_inds]
-        # TODO: Get this from the measurement model
-        track_update_measurement = [
-            track_pos - self.sensor['position'],
-            self.sensor['position'] - track_pos,
-        ]
+        track_to_agent_measurement = track_pos - self.sensor['position']
+        agent_to_track_measurement = self.sensor['position'] - track_pos
 
         track_edges.extend([
             (track_node_name, current_agent_node['name']),
@@ -606,7 +614,7 @@ class MobileSurveillanceEnv(gym.Env):
             ],
             pd=track_edge_attributes['pd'] + 2*[track_pd],
             measurement=track_edge_attributes['measurement'] +
-            track_update_measurement,
+            [track_to_agent_measurement, agent_to_track_measurement],
             relative_position=track_edge_attributes['relative_position'] +
             2*[np.zeros(2)],
             relative_velocity=track_edge_attributes['relative_velocity'] +
@@ -808,7 +816,7 @@ class MobileSurveillanceEnv(gym.Env):
           pos_inds=self.pos_inds,
           rng=self.np_random,
       )
-      survived = self.np_random.uniform(size=len(self.ground_truth)) < ps
+      survived = ps > 0
       for i, path in enumerate(self.ground_truth.copy()):
         if survived[i]:
           path.append(next_states[i])
